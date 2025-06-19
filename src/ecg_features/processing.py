@@ -1,20 +1,7 @@
-"""
-feature_extraction.py - Feature-Extraktion für EKG-Daten
-
-Dieses Modul enthält Funktionen zur Extraktion verschiedener Feature-Typen aus EKG-Daten:
-- Statistische Features (Mittelwert, Median, Varianz, etc.)
-- Frequenzbasierte Features (FFT, Welch-Spektrum)
-- Nichtlineare Features (Entropie, Hurst-Exponent, etc.)
-- Morphologische Features (QRS-Dauer, QT-Intervall, etc.)
-- Patienten-Features (Alter, Geschlecht, BMI)
-
-Die Hauptfunktion extract_all_features kombiniert alle Feature-Typen.
-
-Author: Selina Baumgart
-Date: Mai 2025
-"""
+""""""
 
 import time
+import warnings
 from enum import StrEnum
 from multiprocessing import Pool, cpu_count
 
@@ -29,6 +16,8 @@ import scipy.signal
 import scipy.stats
 
 from .logging import logger
+
+warnings.simplefilter("error", RuntimeWarning)
 
 
 class ECG_FEATURES(StrEnum):
@@ -607,7 +596,21 @@ def extract_welch_features_vectorized(
     end = time.time()
     logger.info(f"Welch feature extraction complete. Shape: {all_features.shape}")
     logger.info(f"Time taken: {end - start:.2f} seconds")
-    column_names = [f"welch_feature_{i}" for i in range(all_features.shape[1])]
+    base_names = [
+        "welch_bin",
+        "log_power_ratio",
+        "band_0_0_5",
+        "band_0_5_4",
+        "band_4_15",
+        "band_15_40",
+        "band_over_40",
+        "spectral_entropy",
+        "total_power",
+        "peak_frequency",
+    ]
+    column_names = [
+        f"welch_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
+    ]
     return pd.DataFrame(all_features, columns=column_names)
 
 
