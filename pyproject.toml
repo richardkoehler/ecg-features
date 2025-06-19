@@ -1,0 +1,51 @@
+[project]
+name = "ecg-features"
+description = "A package for standardized ECG feature extraction."
+readme = "README.md"
+authors = [{ name = "Richard M. Köhler", email = "richard.koehler@outlook.de" }]
+maintainers = [
+    { name = "Richard M. Köhler", email = "richard.koehler@outlook.de" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mne>=1.9.0",
+    "neurokit2>=0.2.11",
+    "nolds>=0.6.2",
+    "numpy>=2.2.6",
+    "pandas>=2.3.0",
+    "scipy>=1.15.3",
+]
+dynamic = ["version"]
+keywords = ["ecg", "features", "timeseries"]
+license = { file = "LICENSE" }
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+default-groups = ["dev", "lint"]
+dev = [
+    "hatch",
+    "mypy",
+    "packaging",
+    "pandas-stubs",
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "tox",
+]
+lint = ["ruff"]
