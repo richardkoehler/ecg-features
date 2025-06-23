@@ -1,9 +1,12 @@
+from typing import Literal, Self
+
 import numpy as np
 import pandas as pd
 import pydantic
+from pydantic import Field
 
 from .features import (
-    FeatureArgs,
+    FeatureSettings,
     get_fft_features,
     get_morphological_features,
     get_nonlinear_features,
@@ -11,21 +14,29 @@ from .features import (
     get_welch_features,
 )
 from .preprocessing import (
-    PreprocessingArgs,
+    PreprocessingSettings,
     preprocess,
 )
 
 
 class Settings(pydantic.BaseModel):
-    preprocessing: PreprocessingArgs = PreprocessingArgs()
-    features: FeatureArgs = FeatureArgs()
+    preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
+    features: FeatureSettings = Field(default_factory=FeatureSettings)
+
+    @pydantic.model_validator(mode="after")
+    def check_any_features(self) -> Self:
+        if not any(feature.enabled for _, feature in self.features):
+            raise ValueError("No features enabled. Please enable at least one feature.")
+        return self
 
 
 def get_features(
     ecg: np.ndarray,
     sfreq: float,
-    settings: Settings = Settings(),
+    settings: Settings | Literal["default"] = "default",
 ) -> pd.DataFrame:
+    if settings == "default":
+        settings = Settings()
     if settings.preprocessing.enabled:
         ecg, sfreq = preprocess(ecg, sfreq=sfreq, preprocessing=settings.preprocessing)
     feature_list = []

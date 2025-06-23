@@ -11,50 +11,63 @@ import pydantic
 import scipy.fft
 import scipy.signal
 import scipy.stats
+from pydantic import Field
 
 from .logging import logger
 
 EPS = 1e-10  # Small constant for numerical stability
 
 
-class FFTArgs(pydantic.BaseModel):
+class BaseFeature(pydantic.BaseModel):
+    enabled: bool = False
+
+
+class FFTArgs(BaseFeature):
     enabled: bool = True
 
 
-class WelchArgs(pydantic.BaseModel):
+class WelchArgs(BaseFeature):
     enabled: bool = True
 
 
-class StatisticalArgs(pydantic.BaseModel):
+class StatisticalArgs(BaseFeature):
     enabled: bool = True
     n_jobs: int = -1
 
 
-class MorphologicalArgs(pydantic.BaseModel):
+class MorphologicalArgs(BaseFeature):
     enabled: bool = True
     n_jobs: int = -1
 
 
-class NonlinearArgs(pydantic.BaseModel):
+class NonlinearArgs(BaseFeature):
     enabled: bool = True
 
 
-class FeatureArgs(pydantic.BaseModel):
-    fft: FFTArgs
-    welch: WelchArgs
-    statistical: StatisticalArgs
-    morphological: MorphologicalArgs
-    nonlinear: NonlinearArgs
+class FeatureSettings(pydantic.BaseModel):
+    fft: FFTArgs = Field(default_factory=FFTArgs)
+    welch: WelchArgs = Field(default_factory=WelchArgs)
+    statistical: StatisticalArgs = Field(default_factory=StatisticalArgs)
+    morphological: MorphologicalArgs = Field(default_factory=MorphologicalArgs)
+    nonlinear: NonlinearArgs = Field(default_factory=NonlinearArgs)
+
+
+class ECGDelineationError(Exception):
+    """Raised when all ECG delineation methods fail to detect peaks properly."""
+
+    pass
+
+
+def assert_3_dims(ecg_data: np.ndarray) -> None:
+    assert ecg_data.ndim == 3, (
+        f"Expected input shape (n_samples, n_channels, n_timepoints). Got: {ecg_data.shape}"
+    )
 
 
 def get_fft_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
-    assert ecg_data.ndim == 3, (
-        "Expected input shape (n_samples, n_channels, n_timepoints)"
-    )
-
+    assert_3_dims(ecg_data)
     logger.info(f"Starting FFT feature extraction for {len(ecg_data)} samples...")
-
-    start_time = time.time()
+    start = time.time()
 
     n_samples, n_channels, n_timepoints = ecg_data.shape
     xf = np.fft.rfftfreq(n_timepoints, 1 / sfreq)  # (freqs,)
@@ -118,8 +131,6 @@ def get_fft_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     power_above_50Hz = apply_band(above_50)
     relative_power_below_50Hz = power_below_50Hz / (total_energy + EPS)
 
-    elapsed = time.time() - start_time
-    logger.info("Progress: %.1f%% - Elapsed: %.2fs", 100, elapsed)
     # Stack all features: shape -> (samples, channels, features)
     features = np.stack(
         [
@@ -179,10 +190,13 @@ def get_fft_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
         f"fft_{name}_ch{ch}" for ch in range(n_channels) for name in base_names
     ]
 
-    features_df = pd.DataFrame(features_reshaped, columns=column_names)
-
-    logger.info("FFT feature extraction complete. Shape: %s", features_df.shape)
-    return features_df
+    feature_df = pd.DataFrame(features_reshaped, columns=column_names)
+    logger.info(
+        "FFT feature extraction complete. Shape: %s. Time taken: %.1f s",
+        feature_df.shape,
+        time.time() - start,
+    )
+    return feature_df
 
 
 def get_statistical_features(
@@ -190,6 +204,8 @@ def get_statistical_features(
     sfreq: float,
     n_jobs: int = -1,
 ) -> pd.DataFrame:
+    assert_3_dims(ecg_data)
+    start = time.time()
     base_names = [
         "sum",
         "mean",
@@ -229,7 +245,13 @@ def get_statistical_features(
     for arg in args:
         results.append(_statistical_single(*arg))
     feature_array = np.vstack(results)
-    return pd.DataFrame(feature_array, columns=column_names)
+    feature_df = pd.DataFrame(feature_array, columns=column_names)
+    logger.info(
+        "Statistical feature extraction complete. Shape: %s. Time taken: %.1f s",
+        feature_df.shape,
+        time.time() - start,
+    )
+    return feature_df
 
 
 def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
@@ -259,6 +281,8 @@ def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     pandas.DataFrame
         DataFrame mit extrahierten nichtlinearen Features
     """
+    assert_3_dims(ecg_data)
+    start = time.time()
     base_names = [
         "sample_entropy",
         "hurst_exponent",
@@ -389,14 +413,20 @@ def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
                 complexity_loss,
             ]
             features[sample, ch * n_features : (ch + 1) * n_features] = channel_features
-
-    logger.info(f"Nichtlineare Features extrahiert: {features.shape}")
-    return pd.DataFrame(features, columns=column_names)
+    feature_df = pd.DataFrame(features, columns=column_names)
+    logger.info(
+        "Statistical feature extraction complete. Shape: %s. Time taken: %.1f s",
+        feature_df.shape,
+        time.time() - start,
+    )
+    return feature_df
 
 
 def get_morphological_features(
     ecg_data: np.ndarray, sfreq: float, n_jobs: int | None = -1
 ) -> pd.DataFrame:
+    assert_3_dims(ecg_data)
+    start = time.time()
     base_names = [
         "qrs_duration",
         "qt_interval",
@@ -439,15 +469,22 @@ def get_morphological_features(
     #     results = pool.starmap(_morph_single, args_list)
     results = []
     for i, args in enumerate(args_list):
-        results.append(_morph_single(*args))
+        results.append(_morph_single_patient(*args))
     features = np.vstack(results)
-    logger.info(f"Morphologische Features extrahiert: {features.shape}")
-    return pd.DataFrame(features, columns=column_names)
+    feature_df = pd.DataFrame(features, columns=column_names)
+    logger.info(
+        "Morphological feature extraction complete. Shape: %s. Time taken: %.1f s",
+        feature_df.shape,
+        time.time() - start,
+    )
+    return feature_df
 
 
 def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
-    logger.info(f"Starting Welch feature extraction for {ecg_data.shape[0]} samples...")
-    assert ecg_data.ndim == 3, "Expected shape: (n_samples, n_channels, n_timepoints)"
+    assert_3_dims(ecg_data)
+    logger.info(
+        "Starting Welch feature extraction for %s samples...", ecg_data.shape[0]
+    )
     start = time.time()
     n_samples, n_channels, n_timepoints = ecg_data.shape
     flat_data = ecg_data.reshape(
@@ -458,34 +495,36 @@ def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     psd_list = []
     freq_list = []
     for channel_data in flat_data:
-        f, Pxx = scipy.signal.welch(
+        freqs, Pxx = scipy.signal.welch(
             channel_data,
             fs=sfreq,
-            nperseg=min(256, len(channel_data)),
-            scaling="spectrum",
+            nperseg=sfreq,
+            scaling="density",
         )
         psd_list.append(Pxx)
-        freq_list.append(f)
+        freq_list.append(freqs)
 
-    f = freq_list[0]
-    psd_array = np.array(psd_list)  # Shape: (n_samples * n_channels, freq_len)
+    freqs = np.array(freq_list[0])
+    psd_array = np.array(psd_list)  # Shape: (n_samples * n_channels, len(freqs))
 
-    # Create frequency masks
-    f = np.array(f)
-    mask_low = f <= 15
-    mask_high = f > 15
-    mask_0_0_5 = (f >= 0) & (f <= 0.5)
-    mask_0_5_4 = (f > 0.5) & (f <= 4)
-    mask_4_15 = (f > 4) & (f <= 15)
-    mask_15_40 = (f > 15) & (f <= 40)
-    mask_over_40 = f > 40
-
-    # Welch bins
+    # Split into n_bins equal-sized dynamic bins (dependent on sampling frequency)
     n_bins = 10
-    idx_bins = np.linspace(0, psd_array.shape[1] - 1, n_bins, dtype=int)
-    welch_bins = psd_array[:, idx_bins]  # Shape: (n_samples * n_channels, 10)
+    bins = np.zeros((psd_array.shape[0], n_bins))
+    bin_freqs = np.zeros((n_bins, 2))
+    for i, bin_idx in enumerate(np.array_split(np.arange(psd_array.shape[1]), n_bins)):
+        bins[:, i] = np.mean(psd_array[:, bin_idx], axis=1)
+        bin_freqs[i, 0] = freqs[bin_idx[0]]
+        bin_freqs[i, 1] = freqs[bin_idx[-1]]
 
-    # Frequency-domain features
+    # Create masks for hard-coded frequency bands
+    mask_low = freqs <= 15
+    mask_high = freqs > 15
+    mask_0_0_5 = (freqs >= 0) & (freqs <= 0.5)
+    mask_0_5_4 = (freqs > 0.5) & (freqs <= 4)
+    mask_4_15 = (freqs > 4) & (freqs <= 15)
+    mask_15_40 = (freqs > 15) & (freqs <= 40)
+    mask_over_40 = freqs > 40
+
     low_power = np.sum(psd_array[:, mask_low], axis=1)
     high_power = np.sum(psd_array[:, mask_high], axis=1)
     log_power_ratio = np.log(high_power / (low_power + 1e-10) + 1e-10)
@@ -496,17 +535,16 @@ def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     band_15_40 = np.sum(psd_array[:, mask_15_40], axis=1)
     band_over_40 = np.sum(psd_array[:, mask_over_40], axis=1)
 
+    # Calculate other features
     total_power = np.sum(psd_array, axis=1)
     psd_norm = psd_array / (total_power[:, None] + 1e-10)
     spectral_entropy = -np.sum(psd_norm * np.log2(psd_norm + 1e-10), axis=1)
-
     peak_indices = np.argmax(psd_array, axis=1)
-    peak_frequency = f[peak_indices]
+    peak_frequency = freqs[peak_indices]
 
-    # Combine features
     all_features = np.column_stack(
         [
-            welch_bins,
+            bins,
             log_power_ratio,
             band_0_0_5,
             band_0_5_4,
@@ -518,13 +556,9 @@ def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
             peak_frequency,
         ]
     )
-
     all_features = all_features.reshape(n_samples, n_channels * all_features.shape[1])
-    end = time.time()
-    logger.info(f"Welch feature extraction complete. Shape: {all_features.shape}")
-    logger.info(f"Time taken: {end - start:.2f} seconds")
     base_names = [
-        "welch_bin",
+        *(f"bin_{low}_{high}" for low, high in bin_freqs),
         "log_power_ratio",
         "band_0_0_5",
         "band_0_5_4",
@@ -538,7 +572,13 @@ def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     column_names = [
         f"welch_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
     ]
-    return pd.DataFrame(all_features, columns=column_names)
+    feature_df = pd.DataFrame(all_features, columns=column_names)
+    logger.info(
+        "Welch feature extraction complete. Shape: %s. Time taken: %.1f s",
+        feature_df.shape,
+        time.time() - start,
+    )
+    return feature_df
 
 
 def _statistical_single(
@@ -625,213 +665,239 @@ def _statistical_single(
     return features
 
 
-def _morph_single(sample_data: np.ndarray, sfreq: float, n_features: int):
+def _morph_single_patient(
+    sample_data: np.ndarray, sfreq: float, n_features: int
+) -> np.ndarray:
     n_chans = sample_data.shape[0]
     features = np.zeros(n_chans * n_features)
     for ch_num, ch_data in enumerate(sample_data):
-        _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
-        r_peaks = peaks_info["ECG_R_Peaks"]
-        n_r_peaks = len(r_peaks) if r_peaks is not None else 0
+        ch_feat = _morph_single_channel(ch_data, sfreq, n_features)
+        features[ch_num * n_features : (ch_num + 1) * n_features] = ch_feat
+    return features
 
-        # Default-Featurewerte
-        qrs_duration = qt_interval = pq_interval = p_duration = t_duration = (
-            st_duration
-        ) = 0
-        r_amplitude = s_amplitude = p_amplitude = t_amplitude = q_amplitude = 0
-        qrs_dispersion = qt_dispersion = p_dispersion = r_point_amplitude = 0
-        p_area = qrs_area = t_area = r_slope = t_slope = rt_duration = 0
-        qrs_curve_length = t_curve_slope = r_symmetry = 0
-        pq_dispersion = t_dispersion = st_dispersion = rt_dispersion = 0
-        if n_r_peaks > 1:
-            _, waves_dict = nk.ecg_delineate(
-                ch_data,
-                rpeaks=r_peaks,
-                sampling_rate=sfreq,
-                method="dwt",
-            )
 
-            # Extrahiere Intervalle
-            p_peaks = waves_dict["ECG_P_Peaks"]
-            q_peaks = waves_dict["ECG_Q_Peaks"]
-            s_peaks = waves_dict["ECG_S_Peaks"]
-            t_peaks = waves_dict["ECG_T_Peaks"]
+def _morph_single_channel(
+    ch_data: np.ndarray, sfreq: float, n_features: int
+) -> np.ndarray:
+    _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
+    r_peaks = peaks_info["ECG_R_Peaks"]
+    n_r_peaks = len(r_peaks) if r_peaks is not None else 0
 
-            p_onsets = waves_dict["ECG_P_Onsets"]
-            p_offsets = waves_dict["ECG_P_Offsets"]
-            t_onsets = waves_dict["ECG_T_Onsets"]
-            t_offsets = waves_dict["ECG_T_Offsets"]
+    # Default-Featurewerte
+    qrs_duration = qt_interval = pq_interval = p_duration = t_duration = st_duration = 0
+    r_amplitude = s_amplitude = p_amplitude = t_amplitude = q_amplitude = 0
+    qrs_dispersion = qt_dispersion = p_dispersion = r_point_amplitude = 0
+    p_area = qrs_area = t_area = r_slope = t_slope = rt_duration = 0
+    qrs_curve_length = t_curve_slope = r_symmetry = 0
+    pq_dispersion = t_dispersion = st_dispersion = rt_dispersion = 0
+    if n_r_peaks <= 1:
+        return np.zeros(n_features)
 
-            n_p_peaks = len(p_peaks) if p_peaks is not None else 0
-            n_q_peaks = len(q_peaks) if q_peaks is not None else 0
-            n_s_peaks = len(s_peaks) if s_peaks is not None else 0
-            n_t_peaks = len(t_peaks) if t_peaks is not None else 0
-            n_p_onsets = len(p_onsets) if p_onsets is not None else 0
-            n_p_offsets = len(p_offsets) if p_offsets is not None else 0
-            n_t_onsets = len(t_onsets) if t_onsets is not None else 0
-            n_t_offsets = len(t_offsets) if t_offsets is not None else 0
+    import warnings
 
-            # QRS-Dauer
-            if n_q_peaks and n_s_peaks:
-                # Berechne durchschnittliche QRS-Dauer
-                qrs_durations: list[float] = []
-                max_index = min(n_q_peaks, n_s_peaks)
-                for q, s in zip(q_peaks[:max_index], s_peaks[:max_index]):
-                    if q >= s or np.isnan(q) or np.isnan(s):
-                        continue
-                    qrs_durations.append((s - q) / sfreq * 1000)  # in ms
-                if qrs_durations:
-                    qrs_duration = np.mean(qrs_durations)
-                    qrs_dispersion = np.std(qrs_durations)
+    waves_dict: dict = {}
+    for method in ["dwt", "peak_prominence", "peak", "cwt"]:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", nk.misc.NeuroKitWarning)
+                _, waves_dict = nk.ecg_delineate(
+                    ch_data,
+                    rpeaks=r_peaks,
+                    sampling_rate=sfreq,
+                    method=method,
+                )
+            break
+        except nk.misc.NeuroKitWarning as e:
+            if "Too few peaks detected" in str(e):
+                logger.warning(f"Peak detection failed with method '{method}': {e}")
+            else:
+                raise
+    if not waves_dict:
+        raise ECGDelineationError("ECG delineation failed with all available methods.")
 
-            # QT-Intervall
-            if n_q_peaks and n_t_peaks:
-                qt_intervals = []
-                max_index = min(n_q_peaks, n_t_peaks)
-                for q, t in zip(q_peaks[:max_index], t_peaks[:max_index]):
-                    if q >= t or np.isnan(q) or np.isnan(t):
-                        continue
-                    qt_intervals.append((t - q) / sfreq * 1000)  # in ms
-                if qt_intervals:
-                    qt_interval = np.mean(qt_intervals)
-                    qt_dispersion = np.std(qt_intervals)
+    # Extrahiere Intervalle
+    p_peaks = waves_dict["ECG_P_Peaks"]
+    q_peaks = waves_dict["ECG_Q_Peaks"]
+    s_peaks = waves_dict["ECG_S_Peaks"]
+    t_peaks = waves_dict["ECG_T_Peaks"]
 
-            # PQ-Intervall
-            if n_p_peaks and n_q_peaks:
-                pq_intervals = []
-                max_index = min(n_p_peaks, n_q_peaks)
-                for p, q in zip(p_peaks[:max_index], q_peaks[:max_index]):
-                    if p >= q or np.isnan(p) or np.isnan(q):
-                        continue
-                    pq_intervals.append((q - p) / sfreq * 1000)  # in ms
-                if pq_intervals:
-                    pq_interval = np.mean(pq_intervals)
-                    pq_dispersion = np.std(pq_intervals)
+    p_onsets = waves_dict["ECG_P_Onsets"]
+    p_offsets = waves_dict["ECG_P_Offsets"]
+    t_onsets = waves_dict["ECG_T_Onsets"]
+    t_offsets = waves_dict["ECG_T_Offsets"]
 
-            # P-Dauer
-            if n_p_onsets and n_p_offsets:
-                p_durations = []
-                max_index = min(n_p_onsets, n_p_offsets)
-                for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
-                    if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
-                        continue
-                    p_durations.append((p_off - p_on) / sfreq * 1000)
-                if p_durations:
-                    p_duration = np.mean(p_durations)
-                    p_dispersion = np.std(p_durations)
+    n_p_peaks = len(p_peaks) if p_peaks is not None else 0
+    n_q_peaks = len(q_peaks) if q_peaks is not None else 0
+    n_s_peaks = len(s_peaks) if s_peaks is not None else 0
+    n_t_peaks = len(t_peaks) if t_peaks is not None else 0
+    n_p_onsets = len(p_onsets) if p_onsets is not None else 0
+    n_p_offsets = len(p_offsets) if p_offsets is not None else 0
+    n_t_onsets = len(t_onsets) if t_onsets is not None else 0
+    n_t_offsets = len(t_offsets) if t_offsets is not None else 0
 
-            # T-Dauer
-            if n_t_onsets and n_t_offsets:
-                t_durations = []
-                max_index = min(n_t_onsets, n_t_offsets)
-                for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
-                    if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
-                        continue
-                    t_durations.append((t_off - t_on) / sfreq * 1000)
-                if t_durations:
-                    t_duration = np.mean(t_durations)
-                    t_dispersion = np.std(t_durations)
+    # QRS-Dauer
+    if n_q_peaks and n_s_peaks:
+        # Berechne durchschnittliche QRS-Dauer
+        qrs_durations: list[float] = []
+        max_index = min(n_q_peaks, n_s_peaks)
+        for q, s in zip(q_peaks[:max_index], s_peaks[:max_index]):
+            if q >= s or np.isnan(q) or np.isnan(s):
+                continue
+            qrs_durations.append((s - q) / sfreq * 1000)  # in ms
+        if qrs_durations:
+            qrs_duration = np.mean(qrs_durations)
+            qrs_dispersion = np.std(qrs_durations)
 
-            # ST-Dauer
-            if n_s_peaks and n_t_onsets:
-                st_durations = []
-                max_index = min(n_s_peaks, n_t_onsets)
-                for s, t_on in zip(s_peaks[:max_index], t_onsets[:max_index]):
-                    if s >= t_on or np.isnan(s) or np.isnan(t_on):
-                        continue
-                    st_durations.append((t_on - s) / sfreq * 1000)
-                if st_durations:
-                    st_duration = np.mean(st_durations)
-                    st_dispersion = np.std(st_durations)
+    # QT-Intervall
+    if n_q_peaks and n_t_peaks:
+        qt_intervals = []
+        max_index = min(n_q_peaks, n_t_peaks)
+        for q, t in zip(q_peaks[:max_index], t_peaks[:max_index]):
+            if q >= t or np.isnan(q) or np.isnan(t):
+                continue
+            qt_intervals.append((t - q) / sfreq * 1000)  # in ms
+        if qt_intervals:
+            qt_interval = np.mean(qt_intervals)
+            qt_dispersion = np.std(qt_intervals)
 
-            # RT-Dauer
-            if n_r_peaks and n_t_onsets:
-                rt_durations = []
-                max_index = min(n_r_peaks, n_t_onsets)
-                for r, t_on in zip(r_peaks[:max_index], t_onsets[:max_index]):
-                    if r >= t_on or np.isnan(r) or np.isnan(t_on):
-                        continue
-                    rt_durations.append((t_on - r) / sfreq * 1000)
-                if rt_durations:
-                    rt_duration = np.mean(rt_durations)
-                    rt_dispersion = np.std(rt_durations)
+    # PQ-Intervall
+    if n_p_peaks and n_q_peaks:
+        pq_intervals = []
+        max_index = min(n_p_peaks, n_q_peaks)
+        for p, q in zip(p_peaks[:max_index], q_peaks[:max_index]):
+            if p >= q or np.isnan(p) or np.isnan(q):
+                continue
+            pq_intervals.append((q - p) / sfreq * 1000)  # in ms
+        if pq_intervals:
+            pq_interval = np.mean(pq_intervals)
+            pq_dispersion = np.std(pq_intervals)
 
-            # Flächen (Integrale unter den Kurven)
-            if n_p_onsets and n_p_offsets:
-                p_areas = []
-                max_index = min(n_p_onsets, n_p_offsets)
-                for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
-                    if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
-                        continue
-                    p_areas.append(np.sum(np.abs(ch_data[p_on:p_off])))
-                if p_areas:
-                    p_area = np.mean(p_areas)
+    # P-Dauer
+    if n_p_onsets and n_p_offsets:
+        p_durations = []
+        max_index = min(n_p_onsets, n_p_offsets)
+        for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
+            if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
+                continue
+            p_durations.append((p_off - p_on) / sfreq * 1000)
+        if p_durations:
+            p_duration = np.mean(p_durations)
+            p_dispersion = np.std(p_durations)
 
-            # T Area
-            if n_t_onsets and n_t_offsets:
-                t_areas = []
-                max_index = min(n_t_onsets, n_t_offsets)
-                for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
-                    if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
-                        continue
-                    t_areas.append(np.sum(np.abs(ch_data[t_on:t_off])))
-                if t_areas:
-                    t_area = np.mean(t_areas)
+    # T-Dauer
+    if n_t_onsets and n_t_offsets:
+        t_durations = []
+        max_index = min(n_t_onsets, n_t_offsets)
+        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
+            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
+                continue
+            t_durations.append((t_off - t_on) / sfreq * 1000)
+        if t_durations:
+            t_duration = np.mean(t_durations)
+            t_dispersion = np.std(t_durations)
 
-            # R Slope
-            if n_r_peaks and n_q_peaks:
-                r_slopes = []
-                max_index = min(n_r_peaks, n_q_peaks)
-                for r, q in zip(r_peaks[:max_index], q_peaks[:max_index]):
-                    if r < q or np.isnan(r) or np.isnan(q):
-                        continue
-                    delta_y = ch_data[r] - ch_data[q]
-                    delta_x = (r - q) / sfreq
-                    if delta_x > 0:
-                        r_slopes.append(delta_y / delta_x)
-                if r_slopes:
-                    r_slope = np.mean(r_slopes)
+    # ST-Dauer
+    if n_s_peaks and n_t_onsets:
+        st_durations = []
+        max_index = min(n_s_peaks, n_t_onsets)
+        for s, t_on in zip(s_peaks[:max_index], t_onsets[:max_index]):
+            if s >= t_on or np.isnan(s) or np.isnan(t_on):
+                continue
+            st_durations.append((t_on - s) / sfreq * 1000)
+        if st_durations:
+            st_duration = np.mean(st_durations)
+            st_dispersion = np.std(st_durations)
 
-            # T Slope
-            if n_t_onsets and n_t_offsets:
-                t_slopes = []
-                max_index = min(n_t_onsets, n_t_offsets)
-                for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
-                    if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
-                        continue
-                    delta_y = ch_data[t_on] - ch_data[t_off]
-                    delta_x = (t_on - t_off) / sfreq
-                    if delta_x > 0:
-                        t_slopes.append(delta_y / delta_x)
-                if t_slopes:
-                    t_slope = np.mean(t_slopes)
+    # RT-Dauer
+    if n_r_peaks and n_t_onsets:
+        rt_durations = []
+        max_index = min(n_r_peaks, n_t_onsets)
+        for r, t_on in zip(r_peaks[:max_index], t_onsets[:max_index]):
+            if r >= t_on or np.isnan(r) or np.isnan(t_on):
+                continue
+            rt_durations.append((t_on - r) / sfreq * 1000)
+        if rt_durations:
+            rt_duration = np.mean(rt_durations)
+            rt_dispersion = np.std(rt_durations)
 
-            # Amplituden
-            if n_p_peaks:
-                p_amplitudes = [ch_data[p] for p in p_peaks if not np.isnan(p)]
-                if p_amplitudes:
-                    p_amplitude = np.mean(p_amplitudes)
+    # Flächen (Integrale unter den Kurven)
+    if n_p_onsets and n_p_offsets:
+        p_areas = []
+        max_index = min(n_p_onsets, n_p_offsets)
+        for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
+            if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
+                continue
+            p_areas.append(np.sum(np.abs(ch_data[p_on:p_off])))
+        if p_areas:
+            p_area = np.mean(p_areas)
 
-            if n_q_peaks:
-                q_amplitudes = [ch_data[q] for q in q_peaks if not np.isnan(q)]
-                if q_amplitudes:
-                    q_amplitude = np.mean(q_amplitudes)
+    # T Area
+    if n_t_onsets and n_t_offsets:
+        t_areas = []
+        max_index = min(n_t_onsets, n_t_offsets)
+        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
+            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
+                continue
+            t_areas.append(np.sum(np.abs(ch_data[t_on:t_off])))
+        if t_areas:
+            t_area = np.mean(t_areas)
 
-            if n_r_peaks:
-                r_amplitudes = [ch_data[r] for r in r_peaks if not np.isnan(r)]
-                if r_amplitudes:
-                    r_amplitude = np.mean(r_amplitudes)
+    # R Slope
+    if n_r_peaks and n_q_peaks:
+        r_slopes = []
+        max_index = min(n_r_peaks, n_q_peaks)
+        for r, q in zip(r_peaks[:max_index], q_peaks[:max_index]):
+            if r < q or np.isnan(r) or np.isnan(q):
+                continue
+            delta_y = ch_data[r] - ch_data[q]
+            delta_x = (r - q) / sfreq
+            if delta_x > 0:
+                r_slopes.append(delta_y / delta_x)
+        if r_slopes:
+            r_slope = np.mean(r_slopes)
 
-            if n_s_peaks:
-                s_amplitudes = [ch_data[s] for s in s_peaks if not np.isnan(s)]
-                if s_amplitudes:
-                    s_amplitude = np.mean(s_amplitudes)
+    # T Slope
+    if n_t_onsets and n_t_offsets:
+        t_slopes = []
+        max_index = min(n_t_onsets, n_t_offsets)
+        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
+            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
+                continue
+            delta_y = ch_data[t_on] - ch_data[t_off]
+            delta_x = (t_on - t_off) / sfreq
+            if delta_x > 0:
+                t_slopes.append(delta_y / delta_x)
+        if t_slopes:
+            t_slope = np.mean(t_slopes)
 
-            if n_t_peaks:
-                t_amplitudes = [ch_data[t] for t in t_peaks if not np.isnan(t)]
-                if t_amplitudes:
-                    t_amplitude = np.mean(t_amplitudes)
+    # Amplituden
+    if n_p_peaks:
+        p_amplitudes = [ch_data[p] for p in p_peaks if not np.isnan(p)]
+        if p_amplitudes:
+            p_amplitude = np.mean(p_amplitudes)
 
-        features[ch_num * n_features : (ch_num + 1) * n_features] = [
+    if n_q_peaks:
+        q_amplitudes = [ch_data[q] for q in q_peaks if not np.isnan(q)]
+        if q_amplitudes:
+            q_amplitude = np.mean(q_amplitudes)
+
+    if n_r_peaks:
+        r_amplitudes = [ch_data[r] for r in r_peaks if not np.isnan(r)]
+        if r_amplitudes:
+            r_amplitude = np.mean(r_amplitudes)
+
+    if n_s_peaks:
+        s_amplitudes = [ch_data[s] for s in s_peaks if not np.isnan(s)]
+        if s_amplitudes:
+            s_amplitude = np.mean(s_amplitudes)
+
+    if n_t_peaks:
+        t_amplitudes = [ch_data[t] for t in t_peaks if not np.isnan(t)]
+        if t_amplitudes:
+            t_amplitude = np.mean(t_amplitudes)
+
+    features = np.array(
+        [
             qrs_duration,
             qt_interval,
             pq_interval,
@@ -861,4 +927,6 @@ def _morph_single(sample_data: np.ndarray, sfreq: float, n_features: int):
             t_curve_slope,
             r_symmetry,
         ]
+    )
+    assert n_features == features.shape[0]
     return features

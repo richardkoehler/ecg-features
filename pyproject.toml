@@ -1,5 +1,5 @@
 [project]
-name = "ecg-features"
+name = "pte-ecg"
 description = "A package for standardized ECG feature extraction."
 readme = "README.md"
 authors = [{ name = "Richard M. Köhler", email = "richard.koehler@outlook.de" }]
@@ -14,10 +14,11 @@ dependencies = [
     "numpy>=2.2.6",
     "pandas>=2.3.0",
     "pydantic>=2.11.7",
+    "pywavelets>=1.8.0", # This is actually a neurokit2 dependency
     "scipy>=1.15.3",
 ]
 dynamic = ["version"]
-keywords = ["ecg", "features", "timeseries"]
+keywords = ["ecg", "features", "timeseries", "electrophysiology"]
 license = { file = "LICENSE" }
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -42,7 +43,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "src/ecg_features/__init__.py"
+path = "src/pte_ecg/__init__.py"
 
 [tool.uv]
 default-groups = "all"

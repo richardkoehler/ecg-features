@@ -16,11 +16,11 @@ def setup_logger(
     Returns:
         Configured logger.
     """
-    logger = logging.getLogger(name)
+    logger = logging.getLogger(__package__)
     logger.setLevel(level)
     # Avoid adding multiple handlers if already configured
     if not logger.handlers:
-        formatter = logging.Formatter("%(message)s")
+        formatter = logging.Formatter("%(name)s | %(levelname)s | %(message)s")
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(level)
         console_handler.setFormatter(formatter)
@@ -34,4 +34,4 @@ def setup_logger(
     return logger
 
 
-logger = setup_logger("ecg_features", level=logging.INFO, log_to_file=None)
+logger = setup_logger(level=logging.INFO, log_to_file=None)

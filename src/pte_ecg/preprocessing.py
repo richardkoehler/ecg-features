@@ -6,24 +6,25 @@ import mne
 import mne.baseline
 import numpy as np
 import pydantic
+from pydantic import Field
 
 from .logging import logger
 
 
 class ResampleArgs(pydantic.BaseModel):
     enabled: bool = False
-    sfreq_new: float
+    sfreq_new: float | None = None
 
 
 class BandpassArgs(pydantic.BaseModel):
     enabled: bool = False
     l_freq: float | None = 0.5
-    h_freq: float | None
+    h_freq: float | None = None
 
 
 class NotchArgs(pydantic.BaseModel):
     enabled: bool = False
-    freq: float
+    freq: float | None = None
 
 
 class NormalizeArgs(pydantic.BaseModel):
@@ -33,16 +34,16 @@ class NormalizeArgs(pydantic.BaseModel):
     )
 
 
-class PreprocessingArgs(pydantic.BaseModel):
+class PreprocessingSettings(pydantic.BaseModel):
     enabled: bool = True
-    resample: ResampleArgs
-    bandpass: BandpassArgs
-    notch: NotchArgs
-    normalize: NormalizeArgs
+    resample: ResampleArgs = Field(default_factory=ResampleArgs)
+    bandpass: BandpassArgs = Field(default_factory=BandpassArgs)
+    notch: NotchArgs = Field(default_factory=NotchArgs)
+    normalize: NormalizeArgs = Field(default_factory=NormalizeArgs)
 
 
 def preprocess(
-    ecg_data: np.ndarray, sfreq: float, preprocessing: PreprocessingArgs
+    ecg_data: np.ndarray, sfreq: float, preprocessing: PreprocessingSettings
 ) -> tuple[np.ndarray, float]:
     """
     Präprozessiert EKG-Daten durch Normalisierung und Transposition.
@@ -65,7 +66,7 @@ def preprocess(
     numpy.ndarray
         Normalisierte und transponierte EKG-Daten mit Form (n_patients, n_leads, n_times)
     """
-    logger.info("Preprocessing ECG data...")
+    logger.info("Preprocessing ECG data")
     assert ecg_data.ndim == 3
     n_patients, n_times, n_leads = ecg_data.shape
     assert n_leads < n_times  # Sanity check

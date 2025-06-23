@@ -1,5 +1,5 @@
 from .features import (
-    FeatureArgs,
+    FeatureSettings,
     FFTArgs,
     MorphologicalArgs,
     NonlinearArgs,
@@ -16,12 +16,14 @@ from .preprocessing import (
     BandpassArgs,
     NormalizeArgs,
     NotchArgs,
-    PreprocessingArgs,
+    PreprocessingSettings,
     ResampleArgs,
     preprocess,
 )
 
+__version__ = "0.1.0"
 __all__ = [
+    "__version__",
     "get_fft_features",
     "get_morphological_features",
     "get_nonlinear_features",
@@ -30,12 +32,12 @@ __all__ = [
     "get_features",
     "preprocess",
     "Settings",
-    "PreprocessingArgs",
+    "PreprocessingSettings",
     "ResampleArgs",
     "BandpassArgs",
     "NotchArgs",
     "NormalizeArgs",
-    "FeatureArgs",
+    "FeatureSettings",
     "FFTArgs",
     "WelchArgs",
     "StatisticalArgs",
@@ -43,4 +45,6 @@ __all__ = [
     "NonlinearArgs",
 ]
 
-__version__ = "0.1.0"
+
+def __dir__():
+    return __all__
