@@ -1,70 +1,53 @@
-""""""
-
+import multiprocessing
 import time
-import warnings
-from enum import StrEnum
-from multiprocessing import Pool, cpu_count
 
-import mne
-import mne.baseline
+# import warnings
+# warnings.simplefilter("error", RuntimeWarning)
 import neurokit2 as nk
 import nolds
 import numpy as np
 import pandas as pd
+import pydantic
 import scipy.fft
 import scipy.signal
 import scipy.stats
 
 from .logging import logger
 
-warnings.simplefilter("error", RuntimeWarning)
-
-
-class ECG_FEATURES(StrEnum):
-    FFT = "fft"
-    WELCH = "welch"
-    STATISTICAL = "statistical"
-    MORPHOLOGICAL = "morphological"
-    NONLINEAR = "nonlinear"
-
-
-class OTHER_FEATURES(StrEnum):
-    PATIENT = "patient"
-
-
-FEATURE_LIST = list[ECG_FEATURES | OTHER_FEATURES]
-
 EPS = 1e-10  # Small constant for numerical stability
 
 
-def get_features(
-    ecg: np.ndarray,
-    sfreq: int,
-    sfreq_new: int | None = None,
-    include_features: FEATURE_LIST = FEATURE_LIST,
-) -> pd.DataFrame:
-    ecg = preprocess_ecg(ecg, sfreq=sfreq, sfreq_new=sfreq_new)
-    feature_list = []
-    if ECG_FEATURES.MORPHOLOGICAL in include_features:
-        feature_list.append(
-            extract_morphological_features(ecg, sfreq_new, clean_ecg=False, n_jobs=-1)
-        )
-    if ECG_FEATURES.STATISTICAL in include_features:
-        feature_list.append(
-            extract_statistical_features(ecg, sfreq_new, clean_ecg=False, n_jobs=-1)
-        )
-    if ECG_FEATURES.FFT in include_features:
-        feature_list.append(extract_fft_features_vectorized(ecg, sfreq_new))
-    if ECG_FEATURES.WELCH in include_features:
-        feature_list.append(extract_welch_features_vectorized(ecg, sfreq_new))
-    if ECG_FEATURES.NONLINEAR in include_features:
-        feature_list.append(extract_nonlinear_features(ecg, sfreq_new))
-    return pd.concat(feature_list, axis=1)
+class FFTArgs(pydantic.BaseModel):
+    enabled: bool = True
 
 
-def extract_fft_features_vectorized(
-    ecg_data: np.ndarray, sampling_rate: int
-) -> pd.DataFrame:
+class WelchArgs(pydantic.BaseModel):
+    enabled: bool = True
+
+
+class StatisticalArgs(pydantic.BaseModel):
+    enabled: bool = True
+    n_jobs: int = -1
+
+
+class MorphologicalArgs(pydantic.BaseModel):
+    enabled: bool = True
+    n_jobs: int = -1
+
+
+class NonlinearArgs(pydantic.BaseModel):
+    enabled: bool = True
+
+
+class FeatureArgs(pydantic.BaseModel):
+    fft: FFTArgs
+    welch: WelchArgs
+    statistical: StatisticalArgs
+    morphological: MorphologicalArgs
+    nonlinear: NonlinearArgs
+
+
+def get_fft_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     assert ecg_data.ndim == 3, (
         "Expected input shape (n_samples, n_channels, n_timepoints)"
     )
@@ -74,7 +57,7 @@ def extract_fft_features_vectorized(
     start_time = time.time()
 
     n_samples, n_channels, n_timepoints = ecg_data.shape
-    xf = np.fft.rfftfreq(n_timepoints, 1 / sampling_rate)  # (freqs,)
+    xf = np.fft.rfftfreq(n_timepoints, 1 / sfreq)  # (freqs,)
     yf = np.abs(np.fft.rfft(ecg_data, axis=-1))  # (samples, channels, freqs)
 
     sum_freq = np.sum(yf, axis=-1)
@@ -202,60 +185,9 @@ def extract_fft_features_vectorized(
     return features_df
 
 
-def preprocess_ecg(
-    ecg_data: np.ndarray, sfreq: int, sfreq_new: int | None = None
-) -> np.ndarray:
-    """
-    Präprozessiert EKG-Daten durch Normalisierung und Transposition.
-
-    Diese Funktion normalisiert jede EKG-Sequenz auf den Bereich [0, 1] und
-    transponiert die Dimensionen, um die für die Feature-Extraktion erforderliche
-    Form zu erhalten.
-
-    Parameters:
-    -----------
-    ecg_data : numpy.ndarray
-        Rohe EKG-Daten mit Form (n_patients, n_times, n_leads)
-    sfreq : int
-        Abtastrate der EKG-Daten in Hz
-
-    Returns:
-    --------
-    numpy.ndarray
-        Normalisierte und transponierte EKG-Daten mit Form (n_patients, n_leads, n_times)
-    """
-    logger.info("Preprocessing ECG data...")
-    assert ecg_data.ndim == 3
-    n_patients, n_times, n_leads = ecg_data.shape
-    assert n_leads < n_times  # Sanity check
-    ecg_data = ecg_data.transpose(0, 2, 1)
-    if sfreq_new:
-        ecg_data = mne.filter.resample(
-            ecg_data, up=1.0, down=sfreq / sfreq_new, axis=-1, n_jobs=1, verbose=None
-        )
-    else:
-        sfreq_new = sfreq
-    n_times = ecg_data.shape[-1]
-    ecg_data = mne.filter.filter_data(
-        ecg_data, sfreq_new, l_freq=0.5, h_freq=40, n_jobs=1, copy=True
-    )
-    ecg_data = ecg_data.reshape(n_patients, -1)
-    ecg_data = mne.baseline.rescale(
-        ecg_data,
-        times=np.arange(ecg_data.shape[-1]),
-        baseline=(None, None),
-        mode="zscore",
-        verbose=None,
-    )
-    ecg_data = ecg_data.reshape(n_patients, n_leads, n_times)
-    assert ecg_data.shape == (n_patients, n_leads, n_times)
-    return ecg_data
-
-
-def extract_statistical_features(
+def get_statistical_features(
     ecg_data: np.ndarray,
-    sampling_rate: int,
-    clean_ecg: bool,
+    sfreq: float,
     n_jobs: int = -1,
 ) -> pd.DataFrame:
     base_names = [
@@ -290,18 +222,17 @@ def extract_statistical_features(
         f"stat_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
     ]
     n_features = len(base_names)
-    args = [
-        (ecg_single, sampling_rate, clean_ecg, n_features) for ecg_single in ecg_data
-    ]
-    with Pool(processes=None if n_jobs == -1 else n_jobs) as pool:
-        results = pool.starmap(_statistical_single, args)
+    args = [(ecg_single, sfreq, n_features) for ecg_single in ecg_data]
+    # with Pool(processes=None if n_jobs == -1 else n_jobs) as pool:
+    #     results = pool.starmap(_statistical_single, args)
+    results = []
+    for arg in args:
+        results.append(_statistical_single(*arg))
     feature_array = np.vstack(results)
     return pd.DataFrame(feature_array, columns=column_names)
 
 
-def extract_nonlinear_features(
-    ecg_data: np.ndarray, sampling_rate: int
-) -> pd.DataFrame:
+def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     """
     Extrahiert nichtlineare Features aus den EKG-Daten für jede Probe und jeden Kanal.
 
@@ -320,7 +251,7 @@ def extract_nonlinear_features(
     -----------
     ecg_data : numpy.ndarray
         EKG-Daten mit Form (n_samples, n_channels, n_timepoints)
-    sampling_rate : int
+    sfreq : float
         Abtastrate der EKG-Daten in Hz
 
     Returns:
@@ -395,11 +326,11 @@ def extract_nonlinear_features(
             dfa_alpha1 = nolds.dfa(ch_data, nvals=[4, 8, 16, 32])
             dfa_alpha2 = nolds.dfa(ch_data, nvals=[64, 128, 256])
             # Poincaré Plot Features
-            ecg_cleaned = nk.ecg_clean(ch_data, sampling_rate=sampling_rate)
-            _, peaks_info = nk.ecg_peaks(ecg_cleaned, sampling_rate=sampling_rate)
+            ecg_cleaned = nk.ecg_clean(ch_data, sampling_rate=sfreq)
+            _, peaks_info = nk.ecg_peaks(ecg_cleaned, sampling_rate=sfreq)
             rpeaks = peaks_info["ECG_R_Peaks"]
             if len(rpeaks) > 1:
-                rr_intervals = np.diff(rpeaks) / sampling_rate
+                rr_intervals = np.diff(rpeaks) / sfreq
                 sd1 = np.std(np.diff(rr_intervals) / np.sqrt(2))
                 sd2 = np.std(rr_intervals)
                 sd1_sd2_ratio = sd1 / (sd2 + 1e-10)
@@ -463,8 +394,8 @@ def extract_nonlinear_features(
     return pd.DataFrame(features, columns=column_names)
 
 
-def extract_morphological_features(
-    ecg_data: np.ndarray, sampling_rate: int, clean_ecg: bool, n_jobs: int = -1
+def get_morphological_features(
+    ecg_data: np.ndarray, sfreq: float, n_jobs: int | None = -1
 ) -> pd.DataFrame:
     base_names = [
         "qrs_duration",
@@ -501,11 +432,9 @@ def extract_morphological_features(
     column_names = [
         f"morph_{name}_ch{ch}" for ch in range(n_chans) for name in base_names
     ]
-    args_list = [
-        (ecg_single, sampling_rate, clean_ecg, n_features) for ecg_single in ecg_data[:]
-    ]
-    processes = cpu_count() if n_jobs in [-1, None] else n_jobs
-    logger.info(f"Starte parallele Verarbeitung mit {processes} CPUs...")
+    args_list = [(ecg_single, sfreq, n_features) for ecg_single in ecg_data[:]]
+    processes = multiprocessing.cpu_count() if n_jobs in [-1, None] else n_jobs
+    # logger.info(f"Starting parallel processing with {processes} CPUS")
     # with Pool(processes=processes) as pool:
     #     results = pool.starmap(_morph_single, args_list)
     results = []
@@ -516,9 +445,7 @@ def extract_morphological_features(
     return pd.DataFrame(features, columns=column_names)
 
 
-def extract_welch_features_vectorized(
-    ecg_data: np.ndarray, sampling_rate: int
-) -> pd.DataFrame:
+def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     logger.info(f"Starting Welch feature extraction for {ecg_data.shape[0]} samples...")
     assert ecg_data.ndim == 3, "Expected shape: (n_samples, n_channels, n_timepoints)"
     start = time.time()
@@ -533,7 +460,7 @@ def extract_welch_features_vectorized(
     for channel_data in flat_data:
         f, Pxx = scipy.signal.welch(
             channel_data,
-            fs=sampling_rate,
+            fs=sfreq,
             nperseg=min(256, len(channel_data)),
             scaling="spectrum",
         )
@@ -614,377 +541,8 @@ def extract_welch_features_vectorized(
     return pd.DataFrame(all_features, columns=column_names)
 
 
-def extract_welch_features(ecg_data: np.ndarray, sampling_rate: int) -> pd.DataFrame:
-    """
-    Extrahiert Welch-Spektrum-basierte Features aus den EKG-Daten für jede Probe und jeden Kanal.
-
-    Diese Funktion berechnet 19 verschiedene spektrale Kennzahlen pro Kanal basierend auf
-    dem Welch-Verfahren zur Spektralschätzung:
-    - Welch-Bin1 bis Welch-Bin10: Energie in verschiedenen Frequenzbändern
-    - Log-Power-Ratio zwischen hohen und niedrigen Frequenzen
-    - Bandpower in verschiedenen Frequenzbereichen (0-0.5Hz, 0.5-4Hz, 4-15Hz, 15-40Hz, >40Hz)
-    - Spektrale Entropie, Gesamtleistung und Spitzenfrequenz
-
-    Parameters:
-    -----------
-    ecg_data : numpy.ndarray
-        EKG-Daten mit Form (n_samples, n_channels, n_timepoints)
-    sampling_rate : int
-        Abtastrate der EKG-Daten in Hz
-
-    Returns:
-    --------
-    pandas.DataFrame
-        DataFrame mit extrahierten Welch-Features
-    """
-    logger.info(f"Starting Welch feature extraction for {ecg_data.shape[0]} samples...")
-    start = time.time()
-    features = []
-    for sample in ecg_data:
-        sample_features = []
-        for channel in sample:
-            # Verwende Welch-Methode zur Spektralschätzung
-            f, Pxx = scipy.signal.welch(
-                channel,
-                fs=sampling_rate,
-                nperseg=min(256, len(channel)),
-                scaling="spectrum",
-            )
-
-            # Extrahiere 10 Bins aus dem Spektrum (gleichmäßig verteilt)
-            if len(Pxx) >= 10:
-                indices = np.linspace(0, len(Pxx) - 1, 10, dtype=int)
-                welch_bins = Pxx[indices]
-            else:
-                # Fallback, wenn zu wenige Punkte
-                welch_bins = np.zeros(10)
-                welch_bins[: len(Pxx)] = Pxx
-
-            # Berechne das Verhältnis von hohen zu niedrigen Frequenzen
-            # Definiere niedrige Frequenzen als 0-15 Hz und hohe als >15 Hz
-            low_freq_idx = np.where(f <= 15)[0]
-            high_freq_idx = np.where(f > 15)[0]
-
-            if len(low_freq_idx) > 0 and len(high_freq_idx) > 0:
-                low_power = np.sum(Pxx[low_freq_idx])
-                high_power = np.sum(Pxx[high_freq_idx])
-                # Verwende Log-Verhältnis für bessere Skalierung
-                log_power_ratio = np.log(high_power / (low_power + 1e-10) + 1e-10)
-            else:
-                log_power_ratio = 0
-
-            # Berechne Bandpower in verschiedenen Frequenzbereichen
-            band_0_0_5 = (
-                np.sum(Pxx[np.where((f >= 0) & (f <= 0.5))[0]])
-                if np.any((f >= 0) & (f <= 0.5))
-                else 0
-            )
-            band_0_5_4 = (
-                np.sum(Pxx[np.where((f > 0.5) & (f <= 4))[0]])
-                if np.any((f > 0.5) & (f <= 4))
-                else 0
-            )
-            band_4_15 = (
-                np.sum(Pxx[np.where((f > 4) & (f <= 15))[0]])
-                if np.any((f > 4) & (f <= 15))
-                else 0
-            )
-            band_15_40 = (
-                np.sum(Pxx[np.where((f > 15) & (f <= 40))[0]])
-                if np.any((f > 15) & (f <= 40))
-                else 0
-            )
-            band_over_40 = np.sum(Pxx[np.where(f > 40)[0]]) if np.any(f > 40) else 0
-
-            # Berechne spektrale Entropie
-            psd_norm = Pxx / (np.sum(Pxx) + 1e-10)
-            spectral_entropy = -np.sum(psd_norm * np.log2(psd_norm + 1e-10))
-
-            # Gesamtleistung und Spitzenfrequenz
-            total_power = np.sum(Pxx)
-            peak_freq_idx = np.argmax(Pxx)
-            peak_frequency = f[peak_freq_idx] if peak_freq_idx < len(f) else 0
-
-            # Kombiniere alle Features
-            channel_features = list(welch_bins) + [
-                log_power_ratio,
-                band_0_0_5,
-                band_0_5_4,
-                band_4_15,
-                band_15_40,
-                band_over_40,
-                spectral_entropy,
-                total_power,
-                peak_frequency,
-            ]
-            sample_features.extend(channel_features)
-
-        features.append(sample_features)
-
-    features_array = np.array(features)
-    end = time.time()
-    logger.info(f"Welch feature extraction complete. Shape: {features_array.shape}")
-    logger.info(f"Time taken: {end - start:.2f} seconds")
-    column_names = [f"welch_feature_{i}" for i in range(features_array.shape[1])]
-    return pd.DataFrame(features_array, columns=column_names)
-
-
-def extract_fft_features(ecg_data: np.ndarray, sampling_rate: int) -> pd.DataFrame:
-    """
-    Extrahiert FFT-basierte Features aus den EKG-Daten für jede Probe und jeden Kanal.
-
-    Diese Funktion berechnet 25 verschiedene spektrale Kennzahlen pro Kanal basierend auf
-    der Fast Fourier Transformation (FFT):
-    - Grundlegende Frequenzstatistiken: Summe, Mittelwert, Varianz der Frequenzen
-    - Dominante Frequenz und Bandbreite
-    - Spektrale Entropie und Flachheit
-    - Hochfrequenz- und Niederfrequenzleistung und deren Verhältnis
-    - Bandenergie und -verhältnisse in verschiedenen Frequenzbereichen (0-10Hz, 10-20Hz, etc.)
-    - Leistung unter/über 50Hz und relative Leistung unter 50Hz
-
-    Parameters:
-    -----------
-    ecg_data : numpy.ndarray
-        EKG-Daten mit Form (n_samples, n_channels, n_timepoints)
-    sampling_rate : int
-        Abtastrate der EKG-Daten in Hz
-
-    Returns:
-    --------
-    pandas.DataFrame
-        DataFrame mit extrahierten FFT-Features
-    """
-    logger.info(f"Starte FFT-Feature-Extraktion für {len(ecg_data)} Samples...")
-    start_time = time.time()
-    base_names = [
-        "sum_freq",
-        "mean_freq",
-        "variance_freq",
-        "dominant_frequency",
-        "bandwidth",
-        "spectral_entropy",
-        "spectral_flatness",
-        "hf_power",
-        "lf_power",
-        "hf_lf_ratio",
-        "band_energy_0_10",
-        "band_ratio_0_10",
-        "band_energy_10_20",
-        "band_ratio_10_20",
-        "band_energy_20_30",
-        "band_ratio_20_30",
-        "band_energy_30_40",
-        "band_ratio_30_40",
-        "power_below_50Hz",
-        "power_above_50Hz",
-        "relative_power_below_50Hz",
-    ]
-    column_names = [
-        f"fft_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
-    ]
-    # Fortschrittsanzeige
-    total_samples = len(ecg_data)
-    logger.info(
-        f"Verarbeite {total_samples} Samples mit jeweils {ecg_data.shape[1]} Kanälen..."
-    )
-    progress_step = max(1, total_samples // 10)  # Zeige Fortschritt in 10%-Schritten
-    all_features = []
-    for i, sample in enumerate(ecg_data):
-        sample_features = []
-        for channel in sample:
-            n = len(channel)
-            yf = scipy.fft.fft(channel)
-            xf = scipy.fft.fftfreq(n, 1 / sampling_rate)
-
-            # Verwende nur die positive Hälfte des Spektrums
-            xf = xf[: n // 2]
-            yf_abs = np.abs(yf[: n // 2])
-
-            # Normalisiere das Spektrum
-            yf_norm = yf_abs / np.sum(yf_abs) if np.sum(yf_abs) > 0 else yf_abs
-
-            # Grundlegende Frequenzstatistiken
-            sum_freq = np.sum(yf_abs)
-            mean_freq = np.mean(yf_abs)
-            variance_freq = np.var(yf_abs)
-
-            # Dominante Frequenz und Bandbreite
-            dominant_freq_idx = np.argmax(yf_abs)
-            dominant_frequency = (
-                xf[dominant_freq_idx] if dominant_freq_idx < len(xf) else 0
-            )
-
-            # Berechne Bandbreite (Frequenzbereich, der 95% der Leistung enthält)
-            cumsum = np.cumsum(yf_norm)
-            bandwidth_idx = np.where(cumsum >= 0.95)[0]
-            bandwidth = xf[bandwidth_idx[0]] if len(bandwidth_idx) > 0 else 0
-
-            # Spektrale Entropie und Flachheit
-            spectral_entropy = -np.sum(yf_norm * np.log2(yf_norm + 1e-10))
-            spectral_flatness = scipy.stats.gmean(yf_abs + 1e-10) / (
-                np.mean(yf_abs) + 1e-10
-            )
-
-            # Hochfrequenz- und Niederfrequenzleistung
-            hf_mask = (xf >= 15) & (xf <= 40)
-            lf_mask = (xf >= 0.5) & (xf < 15)
-
-            hf_power = np.sum(yf_abs[hf_mask]) if np.any(hf_mask) else 0
-            lf_power = np.sum(yf_abs[lf_mask]) if np.any(lf_mask) else 0
-            hf_lf_ratio = hf_power / (lf_power + 1e-10)
-
-            # Bandenergie und -verhältnisse in verschiedenen Frequenzbereichen
-            band_0_10_mask = (xf >= 0) & (xf < 10)
-            band_10_20_mask = (xf >= 10) & (xf < 20)
-            band_20_30_mask = (xf >= 20) & (xf < 30)
-            band_30_40_mask = (xf >= 30) & (xf < 40)
-
-            band_energy_0_10 = (
-                np.sum(yf_abs[band_0_10_mask]) if np.any(band_0_10_mask) else 0
-            )
-            band_energy_10_20 = (
-                np.sum(yf_abs[band_10_20_mask]) if np.any(band_10_20_mask) else 0
-            )
-            band_energy_20_30 = (
-                np.sum(yf_abs[band_20_30_mask]) if np.any(band_20_30_mask) else 0
-            )
-            band_energy_30_40 = (
-                np.sum(yf_abs[band_30_40_mask]) if np.any(band_30_40_mask) else 0
-            )
-
-            total_energy = np.sum(yf_abs)
-            band_ratio_0_10 = band_energy_0_10 / (total_energy + 1e-10)
-            band_ratio_10_20 = band_energy_10_20 / (total_energy + 1e-10)
-            band_ratio_20_30 = band_energy_20_30 / (total_energy + 1e-10)
-            band_ratio_30_40 = band_energy_30_40 / (total_energy + 1e-10)
-
-            # Leistung unter/über 50Hz
-            below_50Hz_mask = xf < 50
-            above_50Hz_mask = xf >= 50
-
-            power_below_50Hz = (
-                np.sum(yf_abs[below_50Hz_mask]) if np.any(below_50Hz_mask) else 0
-            )
-            power_above_50Hz = (
-                np.sum(yf_abs[above_50Hz_mask]) if np.any(above_50Hz_mask) else 0
-            )
-            relative_power_below_50Hz = power_below_50Hz / (total_energy + 1e-10)
-
-            # Kombiniere alle Features
-            channel_features = [
-                sum_freq,
-                mean_freq,
-                variance_freq,
-                dominant_frequency,
-                bandwidth,
-                spectral_entropy,
-                spectral_flatness,
-                hf_power,
-                lf_power,
-                hf_lf_ratio,
-                band_energy_0_10,
-                band_ratio_0_10,
-                band_energy_10_20,
-                band_ratio_10_20,
-                band_energy_20_30,
-                band_ratio_20_30,
-                band_energy_30_40,
-                band_ratio_30_40,
-                power_below_50Hz,
-                power_above_50Hz,
-                relative_power_below_50Hz,
-            ]
-            sample_features.extend(channel_features)
-        if i % progress_step == 0 or i == total_samples - 1:
-            progress = (i + 1) / total_samples * 100
-            elapsed_time = time.time() - start_time
-            logger.info(
-                f"Fortschritt: {progress:.1f}% ({i + 1}/{total_samples}) - Laufzeit: {elapsed_time:.1f} Sekunden"
-            )
-        all_features.append(sample_features)
-    features_df = pd.DataFrame(all_features, columns=column_names)
-    logger.info(f"FFT-Features extrahiert: {features_df.shape}")
-    return features_df
-
-
-def extract_all_features(
-    ecg_data: np.ndarray,
-    sampling_rate: int,
-    include_fft: bool = True,
-    include_statistical: bool = True,
-    include_nonlinear: bool = True,
-    include_morphological: bool = True,
-    include_welch: bool = True,
-    clean_ecg: bool = True,
-) -> pd.DataFrame:
-    """
-    Extrahiert alle verfügbaren Features aus EKG-Daten und Patientendaten.
-
-    Diese Funktion ist die Hauptschnittstelle für die Feature-Extraktion und kombiniert
-    alle verfügbaren Feature-Typen in einem einzigen Aufruf. Die einzelnen Feature-Typen
-    können über Parameter ein- oder ausgeschaltet werden.
-
-    Parameters:
-    -----------
-    ecg_data : numpy.ndarray
-        EKG-Daten mit Form (n_samples, n_channels, n_timepoints)
-    sampling_rate : int, optional
-        Abtastrate der EKG-Daten in Hz, Standard ist 500 Hz
-    include_fft : bool, optional
-        Ob FFT-Features einbezogen werden sollen, Standard ist True
-    include_statistical : bool, optional
-        Ob statistische Features einbezogen werden sollen, Standard ist True
-    include_nonlinear : bool, optional
-        Ob nichtlineare Features einbezogen werden sollen, Standard ist True
-    include_morphological : bool, optional
-        Ob morphologische Features einbezogen werden sollen, Standard ist True
-    include_welch : bool, optional
-        Ob Welch-Power-Spektrum-Features einbezogen werden sollen, Standard ist True
-    clean_ecg : bool, optional
-        Ob die EKG-Daten vor der Feature-Extraktion bereinigt werden sollen, Standard ist True
-
-    Returns:
-    --------
-    pd.DataFrame
-        DataFrame mit den extrahierten Feature-Sets, wobei die Spalten die Feature-Typen
-        und die Werte die entsprechenden Feature-Werte sind.
-    """
-    logger.info(
-        f"Extrahiere Features für {len(ecg_data)} Samples mit Sampling-Rate {sampling_rate} Hz"
-    )
-    features: dict[str, pd.DataFrame] = {}
-    if include_fft:
-        logger.info("Extrahiere FFT-Features...")
-        features["fft"] = extract_fft_features(ecg_data, sampling_rate=sampling_rate)
-    if include_statistical:
-        logger.info("Extrahiere statistische Features...")
-        features["statistical"] = extract_statistical_features(
-            ecg_data, sampling_rate=sampling_rate, clean_ecg=clean_ecg
-        )
-    if include_nonlinear:
-        logger.info("Extrahiere nichtlineare Features...")
-        features["nonlinear"] = extract_nonlinear_features(
-            ecg_data, sampling_rate=sampling_rate
-        )
-    if include_morphological:
-        logger.info("Extrahiere morphologische Features...")
-        features["morphological"] = extract_morphological_features(
-            ecg_data, sampling_rate=sampling_rate, clean_ecg=clean_ecg
-        )
-    if include_welch:
-        logger.info("Extrahiere Welch-Features...")
-        features["welch"] = extract_welch_features(
-            ecg_data, sampling_rate=sampling_rate
-        )
-    logger.info("Feature-Extraktion abgeschlossen:")
-    for feature_type, feature_df in features.items():
-        if not feature_df.empty:
-            logger.info(f"  - {feature_type}: {feature_df.shape}")
-    return pd.concat(features.values(), axis=1)
-
-
 def _statistical_single(
-    sample_data: np.ndarray, sampling_rate: int, clean_ecg: bool, n_features: int
+    sample_data: np.ndarray, sfreq: float, n_features: int
 ) -> np.ndarray:
     features = np.zeros(sample_data.shape[0] * n_features)
     for ch, ch_data in enumerate(sample_data):
@@ -1012,19 +570,17 @@ def _statistical_single(
             rr_interval_median
         ) = rr_iqr = rr_skewness = rr_kurtosis = heart_rate = 0.0
 
-        if clean_ecg:
-            ch_data = nk.ecg_clean(ch_data, sampling_rate=sampling_rate)
-        _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sampling_rate)
+        _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
         rpeaks = peaks_info["ECG_R_Peaks"]
 
         if len(rpeaks) > 1:
-            time_to_first_peak = rpeaks[0] / sampling_rate
+            time_to_first_peak = rpeaks[0] / sfreq
             r_peak_amplitude = ch_data[rpeaks[0]]
             last_peak = rpeaks[-1]
-            duration_between_peaks = (last_peak - rpeaks[0]) / sampling_rate
+            duration_between_peaks = (last_peak - rpeaks[0]) / sfreq
             amplitude_between_peaks = ch_data[last_peak] - ch_data[rpeaks[0]]
 
-            rr_intervals = np.diff(rpeaks) / sampling_rate
+            rr_intervals = np.diff(rpeaks) / sfreq
             rr_interval_mean = np.mean(rr_intervals)
             rr_interval_std = np.std(rr_intervals)
             heart_rate = 60 / (rr_interval_mean + 1e-10)
@@ -1069,19 +625,11 @@ def _statistical_single(
     return features
 
 
-def _morph_single(
-    sample_data: np.ndarray,
-    sampling_rate: int,
-    clean_ecg: bool,
-    n_features: int,
-):
+def _morph_single(sample_data: np.ndarray, sfreq: float, n_features: int):
     n_chans = sample_data.shape[0]
     features = np.zeros(n_chans * n_features)
     for ch_num, ch_data in enumerate(sample_data):
-        if clean_ecg:
-            ch_data = nk.ecg_clean(ch_data, sampling_rate=sampling_rate)
-
-        _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sampling_rate)
+        _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
         r_peaks = peaks_info["ECG_R_Peaks"]
         n_r_peaks = len(r_peaks) if r_peaks is not None else 0
 
@@ -1098,7 +646,7 @@ def _morph_single(
             _, waves_dict = nk.ecg_delineate(
                 ch_data,
                 rpeaks=r_peaks,
-                sampling_rate=sampling_rate,
+                sampling_rate=sfreq,
                 method="dwt",
             )
 
@@ -1130,7 +678,7 @@ def _morph_single(
                 for q, s in zip(q_peaks[:max_index], s_peaks[:max_index]):
                     if q >= s or np.isnan(q) or np.isnan(s):
                         continue
-                    qrs_durations.append((s - q) / sampling_rate * 1000)  # in ms
+                    qrs_durations.append((s - q) / sfreq * 1000)  # in ms
                 if qrs_durations:
                     qrs_duration = np.mean(qrs_durations)
                     qrs_dispersion = np.std(qrs_durations)
@@ -1142,7 +690,7 @@ def _morph_single(
                 for q, t in zip(q_peaks[:max_index], t_peaks[:max_index]):
                     if q >= t or np.isnan(q) or np.isnan(t):
                         continue
-                    qt_intervals.append((t - q) / sampling_rate * 1000)  # in ms
+                    qt_intervals.append((t - q) / sfreq * 1000)  # in ms
                 if qt_intervals:
                     qt_interval = np.mean(qt_intervals)
                     qt_dispersion = np.std(qt_intervals)
@@ -1154,7 +702,7 @@ def _morph_single(
                 for p, q in zip(p_peaks[:max_index], q_peaks[:max_index]):
                     if p >= q or np.isnan(p) or np.isnan(q):
                         continue
-                    pq_intervals.append((q - p) / sampling_rate * 1000)  # in ms
+                    pq_intervals.append((q - p) / sfreq * 1000)  # in ms
                 if pq_intervals:
                     pq_interval = np.mean(pq_intervals)
                     pq_dispersion = np.std(pq_intervals)
@@ -1166,7 +714,7 @@ def _morph_single(
                 for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
                     if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
                         continue
-                    p_durations.append((p_off - p_on) / sampling_rate * 1000)
+                    p_durations.append((p_off - p_on) / sfreq * 1000)
                 if p_durations:
                     p_duration = np.mean(p_durations)
                     p_dispersion = np.std(p_durations)
@@ -1178,7 +726,7 @@ def _morph_single(
                 for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
                     if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
                         continue
-                    t_durations.append((t_off - t_on) / sampling_rate * 1000)
+                    t_durations.append((t_off - t_on) / sfreq * 1000)
                 if t_durations:
                     t_duration = np.mean(t_durations)
                     t_dispersion = np.std(t_durations)
@@ -1190,7 +738,7 @@ def _morph_single(
                 for s, t_on in zip(s_peaks[:max_index], t_onsets[:max_index]):
                     if s >= t_on or np.isnan(s) or np.isnan(t_on):
                         continue
-                    st_durations.append((t_on - s) / sampling_rate * 1000)
+                    st_durations.append((t_on - s) / sfreq * 1000)
                 if st_durations:
                     st_duration = np.mean(st_durations)
                     st_dispersion = np.std(st_durations)
@@ -1202,7 +750,7 @@ def _morph_single(
                 for r, t_on in zip(r_peaks[:max_index], t_onsets[:max_index]):
                     if r >= t_on or np.isnan(r) or np.isnan(t_on):
                         continue
-                    rt_durations.append((t_on - r) / sampling_rate * 1000)
+                    rt_durations.append((t_on - r) / sfreq * 1000)
                 if rt_durations:
                     rt_duration = np.mean(rt_durations)
                     rt_dispersion = np.std(rt_durations)
@@ -1237,7 +785,7 @@ def _morph_single(
                     if r < q or np.isnan(r) or np.isnan(q):
                         continue
                     delta_y = ch_data[r] - ch_data[q]
-                    delta_x = (r - q) / sampling_rate
+                    delta_x = (r - q) / sfreq
                     if delta_x > 0:
                         r_slopes.append(delta_y / delta_x)
                 if r_slopes:
@@ -1251,7 +799,7 @@ def _morph_single(
                     if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
                         continue
                     delta_y = ch_data[t_on] - ch_data[t_off]
-                    delta_x = (t_on - t_off) / sampling_rate
+                    delta_x = (t_on - t_off) / sfreq
                     if delta_x > 0:
                         t_slopes.append(delta_y / delta_x)
                 if t_slopes:
