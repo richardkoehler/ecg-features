@@ -1,13 +1,10 @@
-<p align="left">
-  <img src="docs/ecg_trace.svg" alt="ECG Heartbeat Trace" width="300"/>
-</p>
+![ECG Trace](docs/ecg_trace.svg)
 
 # PTE-ECG
-<p align="left">
-  <img src="https://img.shields.io/github/license/richardkoehler/pte-ecg" alt="License"/>
-  <!-- <img src="https://img.shields.io/pypi/v/pte-ecg?color=blue" alt="PyPI version"/>
-  <img src="https://img.shields.io/github/actions/workflow/status/richardkoehler/pte-ecg/python-package.yml?branch=main" alt="Build Status"/> -->
-</p>
+
+![License](https://img.shields.io/github/license/richardkoehler/pte-ecg)
+<!-- ![PyPI version](https://img.shields.io/pypi/v/pte-ecg?color=blue) -->
+<!-- ![Build Status](https://img.shields.io/github/actions/workflow/status/richardkoehler/pte-ecg/python-package.yml?branch=main) -->
 
 **Python Tools for Electrophysiology (PTE) - ECG**
 
