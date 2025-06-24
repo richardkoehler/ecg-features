@@ -90,6 +90,9 @@ def get_features(
         )
 
     if settings == "default":
+        logger.info(
+            "No settings passed. Using default settings for ECG feature extraction."
+        )
         settings = Settings()
 
     if not isinstance(ecg, np.ndarray) or ecg.ndim != 3:

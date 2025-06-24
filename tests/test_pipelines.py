@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pte_ecg.pipelines import Settings, get_features
+import pte_ecg
 
 
 def test_get_features_basic(test_data: tuple[np.ndarray, int]):
@@ -13,15 +13,11 @@ def test_get_features_basic(test_data: tuple[np.ndarray, int]):
 
     ecg_data, sfreq = test_data
 
-    settings = Settings()
-    settings.features.nonlinear.enabled = False
-    settings.features.fft.enabled = True
-    settings.features.morphological.enabled = False
-    settings.features.welch.enabled = False
-    settings.features.statistical.enabled = False
+    settings = pte_ecg.Settings()
+    settings.features.nonlinear.enabled = False  # Too slow right now
 
     # Extract features with default settings
-    features = get_features(ecg_data, sfreq)
+    features = pte_ecg.get_features(ecg_data, sfreq=sfreq, settings=settings)
 
     # Basic assertions
     assert isinstance(features, pd.DataFrame)
@@ -37,7 +33,20 @@ def test_get_features_custom_settings(test_data: tuple[np.ndarray, int]):
     ecg_data, sfreq = test_data
 
     # Create custom settings with only statistical features enabled
-    settings = Settings()
+    settings = pte_ecg.Settings()
+    settings.preprocessing.resample.enabled = True
+    settings.preprocessing.resample.sfreq_new = sfreq / 2
+
+    settings.preprocessing.bandpass.enabled = True
+    settings.preprocessing.bandpass.l_freq = 0.5
+    settings.preprocessing.bandpass.h_freq = sfreq / 5
+
+    settings.preprocessing.notch.enabled = True
+    settings.preprocessing.notch.freq = sfreq / 6
+
+    settings.preprocessing.normalize.enabled = True
+    settings.preprocessing.normalize.mode = "zscore"
+
     settings.features.fft.enabled = True
     settings.features.morphological.enabled = False
     settings.features.nonlinear.enabled = False
@@ -45,7 +54,7 @@ def test_get_features_custom_settings(test_data: tuple[np.ndarray, int]):
     settings.features.statistical.enabled = False
 
     # Extract features
-    features = get_features(ecg_data, sfreq, settings=settings)
+    features = pte_ecg.get_features(ecg=ecg_data, sfreq=sfreq, settings=settings)
 
     # Check that only FFT features were extracted
     assert all(col.startswith("fft_") for col in features.columns)
@@ -55,28 +64,28 @@ def test_get_features_invalid_input():
     """Test get_features with invalid input."""
     # Test with wrong dimensions
     with pytest.raises(ValueError):
-        get_features(np.random.randn(100), sfreq=360)  # 1D input
+        pte_ecg.get_features(np.random.randn(100), sfreq=360)  # 1D input
 
     with pytest.raises(ValueError):
-        get_features(np.random.randn(10, 10), sfreq=360)  # 2D input
+        pte_ecg.get_features(np.random.randn(10, 10), sfreq=360)  # 2D input
 
     # Test with invalid sfreq
     with pytest.raises(ValueError):
-        get_features(np.random.randn(5, 1, 1000), sfreq=0)  # Zero sfreq
+        pte_ecg.get_features(np.random.randn(5, 1, 1000), sfreq=0)  # Zero sfreq
 
     # Test with invalid settings type
     with pytest.raises(TypeError):
-        get_features(np.random.randn(5, 1, 1000), sfreq=360, settings=1)
+        pte_ecg.get_features(np.random.randn(5, 1, 1000), sfreq=360, settings=1)
 
     # Test with invalid settings value
     with pytest.raises(ValueError):
-        get_features(np.random.randn(5, 1, 1000), sfreq=360, settings="random")
+        pte_ecg.get_features(np.random.randn(5, 1, 1000), sfreq=360, settings="random")
 
 
 def test_get_features_empty_features(test_data: tuple[np.ndarray, int]):
     """Test get_features with no features enabled."""
     ecg_data, sfreq = test_data
-    settings = Settings()
+    settings = pte_ecg.Settings()
 
     # Disable all features
     for feature in [
@@ -90,10 +99,10 @@ def test_get_features_empty_features(test_data: tuple[np.ndarray, int]):
 
     # Should raise ValueError when no features are enabled
     with pytest.raises(ValueError, match="No features were extracted"):
-        get_features(ecg_data, sfreq, settings=settings)
+        pte_ecg.get_features(ecg=ecg_data, sfreq=sfreq, settings=settings)
 
 
-# @pytest.fixture
+@pytest.fixture
 def test_data() -> tuple[np.ndarray, int]:
     """Generate synthetic ECG data for testing.
 
@@ -119,8 +128,4 @@ def test_data() -> tuple[np.ndarray, int]:
 
 
 if __name__ == "__main__":
-    test_get_features_basic(test_data())
-    test_get_features_custom_settings(test_data())
-    test_get_features_invalid_input()
-    test_get_features_empty_features(test_data())
-    # pytest.main([__file__])
+    pytest.main([__file__])
