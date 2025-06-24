@@ -1,6 +1,9 @@
 # PTE-ECG
+*Python Tools for Electrophysiology (PTE) - ECG*
 
-A Python package for extracting features from ECG signals, designed for pulmonary thromboembolism (PTE) analysis.
+A Python package for extracting features from ECG signals.
+
+This package aims at providing an extensible and pluggable interface to extract features from raw ECG, while also providing reasonable default values for preprocessing.
 
 ## Installation
 
@@ -16,7 +19,7 @@ pip install git+https://github.com/richardkoehler/pte-ecg.git
 uv add git+https://github.com/richardkoehler/pte-ecg.git
 ```
 
-### From source
+## Development setup
 
 ```bash
 # Clone the repository
@@ -24,10 +27,10 @@ git clone https://github.com/richardkoehler/pte-ecg.git
 cd pte-ecg
 
 # Install with pip
-pip install .
+pip install -e .
 
 # Or install with uv
-uv pip install .
+uv sync
 ```
 
 ## Usage
@@ -36,15 +39,31 @@ Here's a basic example of how to use the package to extract features from ECG da
 
 ```python
 import numpy as np
-from pte_ecg.pipelines import get_features, Settings
+import pte_ecg
 
 # Generate some synthetic ECG data (replace with your actual data)
 # Shape should be (n_channels, n_samples)
 sfreq = 1000  # Sampling frequency in Hz
 ecg_data = np.random.randn(1, 10000)  # 1 channel, 10 seconds at 1000 Hz
 
-# Create custom settings (optional)
-settings = Settings()
+# Use default settings
+settings = "default"
+
+# Or use custom setting
+settings = pte_ecg.Settings()
+settings.preprocessing.resample.enabled = True
+settings.preprocessing.resample.sfreq_new = sfreq / 2
+
+settings.preprocessing.bandpass.enabled = True
+settings.preprocessing.bandpass.l_freq = 0.5
+settings.preprocessing.bandpass.h_freq = sfreq / 5
+
+settings.preprocessing.notch.enabled = True
+settings.preprocessing.notch.freq = sfreq / 6
+
+settings.preprocessing.normalize.enabled = True
+settings.preprocessing.normalize.mode = "zscore"
+
 settings.features.fft.enabled = True
 settings.features.morphological.enabled = False
 settings.features.nonlinear.enabled = False
@@ -52,26 +71,27 @@ settings.features.welch.enabled = False
 settings.features.statistical.enabled = False
 
 # Extract features
-features = get_features(ecg_data, sfreq, settings=settings)
+features = pte_ecg.get_features(ecg=ecg_data, sfreq=sfreq, settings=settings)
 
-print(f"Extracted {len(features.columns)} features:")
-print(features.head())
+print(f"Extracted {len(features.columns)} features:\n{features.head()}")
 ```
 
 ## Features
 
-- Multiple feature extraction methods:
+- Preprocessing methods:
+  - Resampling
+  - Bandpass filtering
+  - Notch filtering
+  - Normalization
+- Feature extraction methods:
   - FFT-based features
   - Morphological features
   - Nonlinear features
   - Statistical features
-  - Welch's method for power spectral density
+  - Welch's method-based features
 - Configurable feature extraction pipeline
-- Efficient processing of multi-channel ECG data
+- Efficient processing of multi-subject, multi-channel data
 
-## Documentation
-
-For detailed documentation, please refer to the [documentation](https://github.com/richardkoehler/pte-ecg).
 
 ## License
 
@@ -79,4 +99,4 @@ This project is licensed under the terms of the MIT license. See the [LICENSE](L
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit an issue if you find a bug or have a feature request. Pull requests are also welcome.
