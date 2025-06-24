@@ -1,11 +1,47 @@
+<p align="left">
+  <img src="docs/ecg_trace.svg" alt="ECG Heartbeat Trace" width="300"/>
+</p>
+
 # PTE-ECG
-*Python Tools for Electrophysiology (PTE) - ECG*
+<p align="left">
+  <img src="https://img.shields.io/github/license/richardkoehler/pte-ecg" alt="License"/>
+  <!-- <img src="https://img.shields.io/pypi/v/pte-ecg?color=blue" alt="PyPI version"/>
+  <img src="https://img.shields.io/github/actions/workflow/status/richardkoehler/pte-ecg/python-package.yml?branch=main" alt="Build Status"/> -->
+</p>
+
+**Python Tools for Electrophysiology (PTE) - ECG**
 
 A Python package for extracting features from ECG signals.
 
 This package aims at providing an extensible and pluggable interface to extract features from raw ECG, while also providing reasonable default values for preprocessing.
 
-## Installation
+## Table of Contents
+- [✨ Highlights](#highlights)
+- [🚀 Installation](#installation)
+- [💻 Development setup](#development-setup)
+- [🩺 Usage](#usage)
+- [📄 License](#license)
+- [🤝 Contributing](#contributing)
+
+
+## Highlights
+
+- 🔩Configurable and pluggable feature extraction pipeline
+- ⚡️Efficient processing of multi-subject, multi-channel data
+- 🛠️ Preprocessing methods
+  - Resampling
+  - Bandpass filtering
+  - Notch filtering
+  - Normalization
+- 📊 Feature extraction methods
+  - FFT-based features
+  - Morphological features
+  - Nonlinear features
+  - Statistical features
+  - Welch's method-based features
+
+
+## 🚀 Installation
 
 ### Using pip
 
@@ -75,23 +111,6 @@ features = pte_ecg.get_features(ecg=ecg_data, sfreq=sfreq, settings=settings)
 
 print(f"Extracted {len(features.columns)} features:\n{features.head()}")
 ```
-
-## Features
-
-- Preprocessing methods:
-  - Resampling
-  - Bandpass filtering
-  - Notch filtering
-  - Normalization
-- Feature extraction methods:
-  - FFT-based features
-  - Morphological features
-  - Nonlinear features
-  - Statistical features
-  - Welch's method-based features
-- Configurable feature extraction pipeline
-- Efficient processing of multi-subject, multi-channel data
-
 
 ## License
 
