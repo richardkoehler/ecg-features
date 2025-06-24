@@ -8,7 +8,7 @@ import numpy as np
 import pydantic
 from pydantic import Field
 
-from .logging import logger
+from ._logging import logger
 
 
 class ResampleArgs(pydantic.BaseModel):

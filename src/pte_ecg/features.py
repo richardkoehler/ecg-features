@@ -13,7 +13,7 @@ import scipy.signal
 import scipy.stats
 from pydantic import Field
 
-from .logging import logger
+from ._logging import logger
 
 EPS = 1e-10  # Small constant for numerical stability
 
@@ -478,6 +478,11 @@ def get_morphological_features(
         time.time() - start,
     )
     return feature_df
+
+
+def _log_start(feature_name: str, shape: tuple) -> float:
+    logger.info("Starting %s feature extraction for %s samples...", feature_name, shape)
+    return time.time()
 
 
 def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
