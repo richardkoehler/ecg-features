@@ -49,9 +49,6 @@ path = "src/pte_ecg/__init__.py"
 [tool.uv]
 default-groups = "all"
 
-[tool.uv.sources]
-neurokit2 = { path = "../NeuroKit", editable = true }
-
 [tool.pytest.ini_options]
 testpaths = "tests"
 python_files = "test_*.py"
