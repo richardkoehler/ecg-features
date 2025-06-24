@@ -1,10 +1,20 @@
-import multiprocessing
-import time
+"""Feature extraction module for ECG signal analysis.
 
-# import warnings
-# warnings.simplefilter("error", RuntimeWarning)
+This module provides functions to extract various types of features from ECG signals,
+including statistical, morphological, and nonlinear features. It supports parallel
+processing for efficient computation on multi-channel ECG data.
+"""
+
+import multiprocessing
+import os
+import time
+import warnings
+
 import neurokit2 as nk
-import nolds
+
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=UserWarning, module="nolds")
+    import nolds
 import numpy as np
 import pandas as pd
 import pydantic
@@ -19,32 +29,80 @@ EPS = 1e-10  # Small constant for numerical stability
 
 
 class BaseFeature(pydantic.BaseModel):
+    """Base class for feature extraction settings.
+
+    Attributes:
+        enabled: Whether this feature type should be extracted.
+    """
+
     enabled: bool = False
 
 
 class FFTArgs(BaseFeature):
+    """Settings for Fast Fourier Transform (FFT) feature extraction.
+
+    Attributes:
+        enabled: Whether to compute FFT features.
+    """
+
     enabled: bool = True
 
 
 class WelchArgs(BaseFeature):
+    """Settings for Welch's method power spectral density feature extraction.
+
+    Attributes:
+        enabled: Whether to compute Welch spectral features.
+    """
+
     enabled: bool = True
 
 
 class StatisticalArgs(BaseFeature):
+    """Settings for statistical feature extraction.
+
+    Attributes:
+        enabled: Whether to compute statistical features.
+        n_jobs: Number of parallel jobs to run. -1 means using all processors.
+    """
+
     enabled: bool = True
     n_jobs: int = -1
 
 
 class MorphologicalArgs(BaseFeature):
+    """Settings for morphological feature extraction.
+
+    Attributes:
+        enabled: Whether to compute morphological features.
+        n_jobs: Number of parallel jobs to run. -1 means using all processors.
+    """
+
     enabled: bool = True
     n_jobs: int = -1
 
 
 class NonlinearArgs(BaseFeature):
+    """Settings for nonlinear feature extraction.
+
+    Attributes:
+        enabled: Whether to compute nonlinear features.
+    """
+
     enabled: bool = True
 
 
 class FeatureSettings(pydantic.BaseModel):
+    """Container for all feature extraction settings.
+
+    Attributes:
+        fft: Settings for FFT feature extraction.
+        welch: Settings for Welch's method feature extraction.
+        statistical: Settings for statistical feature extraction.
+        morphological: Settings for morphological feature extraction.
+        nonlinear: Settings for nonlinear feature extraction.
+    """
+
     fft: FFTArgs = Field(default_factory=FFTArgs)
     welch: WelchArgs = Field(default_factory=WelchArgs)
     statistical: StatisticalArgs = Field(default_factory=StatisticalArgs)
@@ -59,15 +117,43 @@ class ECGDelineationError(Exception):
 
 
 def assert_3_dims(ecg_data: np.ndarray) -> None:
-    assert ecg_data.ndim == 3, (
-        f"Expected input shape (n_samples, n_channels, n_timepoints). Got: {ecg_data.shape}"
-    )
+    """Ensure the input array has 3 dimensions.
+
+    Args:
+        ecg_data: Input array to check.
+
+    Raises:
+        ValueError: If input array doesn't have exactly 3 dimensions.
+    """
+    if ecg_data.ndim != 3:
+        raise ValueError("ECG data must be 3D (n_samples, n_channels, n_timepoints)")
 
 
 def get_fft_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
+    """Extract FFT features from ECG data for each sample and channel.
+
+    This function calculates various FFT-based features, including:
+    - Sum of frequencies
+    - Mean of frequencies
+    - Variance of frequencies
+    - Dominant frequency
+    - Bandwidth (95% cumulative energy)
+    - Spectral entropy
+    - Spectral flatness
+    - Frequency band masks (e.g., HF, LF, VLF)
+
+    Args:
+        ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+
+    Returns:
+        DataFrame containing the extracted FFT features
+
+    Raises:
+        ValueError: If input data has incorrect dimensions
+    """
     assert_3_dims(ecg_data)
-    logger.info(f"Starting FFT feature extraction for {len(ecg_data)} samples...")
-    start = time.time()
+    start = _log_start("FFT", ecg_data.shape[0])
 
     n_samples, n_channels, n_timepoints = ecg_data.shape
     xf = np.fft.rfftfreq(n_timepoints, 1 / sfreq)  # (freqs,)
@@ -191,11 +277,7 @@ def get_fft_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     ]
 
     feature_df = pd.DataFrame(features_reshaped, columns=column_names)
-    logger.info(
-        "FFT feature extraction complete. Shape: %s. Time taken: %.1f s",
-        feature_df.shape,
-        time.time() - start,
-    )
+    _log_end("FFT", start, feature_df.shape)
     return feature_df
 
 
@@ -204,8 +286,49 @@ def get_statistical_features(
     sfreq: float,
     n_jobs: int = -1,
 ) -> pd.DataFrame:
+    """Extract statistical features from ECG data for each sample and channel.
+
+    This function calculates various statistical features, including:
+    - Sum
+    - Mean
+    - Median
+    - Mode
+    - Variance
+    - Range
+    - Min
+    - Max
+    - IQR
+    - Skewness
+    - Kurtosis
+    - Peak-to-peak
+    - Autocorrelation
+    - Time to first peak
+    - R-peak amplitude
+    - Duration between peaks
+    - Amplitude between peaks
+    - RR interval mean
+    - RR interval std
+    - Heart rate
+    - HRV
+    - RR interval difference mean
+    - RR interval median
+    - RR interval IQR
+    - RR interval skewness
+    - RR interval kurtosis
+
+    Args:
+        ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+        n_jobs: Number of parallel jobs to run. -1 means using all processors.
+
+    Returns:
+        DataFrame containing the extracted statistical features
+
+    Raises:
+        ValueError: If input data has incorrect dimensions
+    """
     assert_3_dims(ecg_data)
-    start = time.time()
+    start = _log_start("Statistical", ecg_data.shape[0])
     base_names = [
         "sum",
         "mean",
@@ -238,51 +361,46 @@ def get_statistical_features(
         f"stat_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
     ]
     n_features = len(base_names)
-    args = [(ecg_single, sfreq, n_features) for ecg_single in ecg_data]
-    # with Pool(processes=None if n_jobs == -1 else n_jobs) as pool:
-    #     results = pool.starmap(_statistical_single, args)
-    results = []
-    for arg in args:
-        results.append(_statistical_single(*arg))
+    args_list = ((ecg_single, sfreq, n_features) for ecg_single in ecg_data)
+    processes = _get_n_processes(n_jobs, ecg_data.shape[0])
+    if processes in [0, 1]:
+        results = [_stat_single_patient(*args) for args in args_list]
+    else:
+        logger.info(f"Starting parallel processing with {processes} CPUs")
+        with multiprocessing.Pool(processes=processes) as pool:
+            results = pool.starmap(_stat_single_patient, args_list)
     feature_array = np.vstack(results)
     feature_df = pd.DataFrame(feature_array, columns=column_names)
-    logger.info(
-        "Statistical feature extraction complete. Shape: %s. Time taken: %.1f s",
-        feature_df.shape,
-        time.time() - start,
-    )
+    _log_end("Statistical", start, feature_df.shape)
     return feature_df
 
 
 def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
-    """
-    Extrahiert nichtlineare Features aus den EKG-Daten für jede Probe und jeden Kanal.
+    """Extract nonlinear features from ECG data for each sample and channel.
 
-    Diese Funktion berechnet 30 verschiedene nichtlineare Kennzahlen pro Kanal, die
-    komplexe dynamische Eigenschaften des EKG-Signals erfassen:
-    - Sample Entropy: Maß für die Komplexität und Unvorhersehbarkeit des Signals
-    - Hurst-Exponent: Maß für die Langzeitabhängigkeit im Signal
-    - Higuchi Fractal Dimension: Maß für die fraktale Dimension des Signals
-    - Recurrence Rate: Maß für die Wiederholungen im Signal
-    - DFA Alpha1/Alpha2: Detrended Fluctuation Analysis Parameter
-    - SD1/SD2: Poincaré-Plot-Parameter für Herzfrequenzvariabilität
-    - SD1/SD2 Ratio: Verhältnis der Poincaré-Plot-Parameter
-    - Und weitere nichtlineare Features wie Approximate Entropy, Permutation Entropy, etc.
+    This function calculates 30 different nonlinear metrics per channel that capture
+    complex dynamic properties of the ECG signal:
+    - Sample Entropy: Measure of signal complexity and unpredictability
+    - Hurst Exponent: Measure of long-term memory of the time series
+    - Higuchi Fractal Dimension: Measure of the fractal dimension of the signal
+    - Recurrence Rate: Measure of signal repetitions
+    - DFA Alpha1/Alpha2: Detrended Fluctuation Analysis parameters
+    - SD1/SD2: Poincaré plot parameters for heart rate variability
+    - SD1/SD2 Ratio: Ratio of Poincaré plot parameters
+    - Additional nonlinear features like Approximate Entropy and Permutation Entropy
 
-    Parameters:
-    -----------
-    ecg_data : numpy.ndarray
-        EKG-Daten mit Form (n_samples, n_channels, n_timepoints)
-    sfreq : float
-        Abtastrate der EKG-Daten in Hz
+    Args:
+        ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
 
     Returns:
-    --------
-    pandas.DataFrame
-        DataFrame mit extrahierten nichtlinearen Features
+        DataFrame containing the extracted nonlinear features
+
+    Raises:
+        ValueError: If input data has incorrect dimensions
     """
     assert_3_dims(ecg_data)
-    start = time.time()
+    start = _log_start("Nonlinear", ecg_data.shape[0])
     base_names = [
         "sample_entropy",
         "hurst_exponent",
@@ -322,7 +440,6 @@ def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     ]
     features = np.zeros((n_samples, n_chans * n_features))
     for sample, sample_data in enumerate(ecg_data):
-        logger.info(f"Extract nonlinear features for sample {sample}/{len(ecg_data)}")
         for ch, ch_data in enumerate(sample_data):
             sample_entropy = hurst_exponent = higuchi_fd = recurrence_rate = 0
             dfa_alpha1 = dfa_alpha2 = sd1 = sd2 = sd1_sd2_ratio = 0.0
@@ -414,19 +531,58 @@ def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
             ]
             features[sample, ch * n_features : (ch + 1) * n_features] = channel_features
     feature_df = pd.DataFrame(features, columns=column_names)
-    logger.info(
-        "Statistical feature extraction complete. Shape: %s. Time taken: %.1f s",
-        feature_df.shape,
-        time.time() - start,
-    )
+    _log_end("Nonlinear", start, feature_df.shape)
     return feature_df
 
 
 def get_morphological_features(
     ecg_data: np.ndarray, sfreq: float, n_jobs: int | None = -1
 ) -> pd.DataFrame:
+    """Extract morphological features from ECG data for each sample and channel.
+
+    This function calculates various morphological features, including:
+    - QRS duration
+    - QT interval
+    - PQ interval
+    - P duration
+    - T duration
+    - ST duration
+    - R amplitude
+    - S amplitude
+    - P amplitude
+    - T amplitude
+    - Q amplitude
+    - PQ dispersion
+    - T dispersion
+    - ST dispersion
+    - RT dispersion
+    - QRS dispersion
+    - QT dispersion
+    - P dispersion
+    - R point amplitude
+    - P area
+    - QRS area
+    - T area
+    - R slope
+    - T slope
+    - RT duration
+    - QRS curve length
+    - T curve slope
+    - R symmetry
+
+    Args:
+        ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+        n_jobs: Number of parallel jobs to run. -1 means using all processors.
+
+    Returns:
+        DataFrame containing the extracted morphological features
+
+    Raises:
+        ValueError: If input data has incorrect dimensions
+    """
     assert_3_dims(ecg_data)
-    start = time.time()
+    start = _log_start("Morphological", ecg_data.shape[0])
     base_names = [
         "qrs_duration",
         "qt_interval",
@@ -462,35 +618,85 @@ def get_morphological_features(
     column_names = [
         f"morph_{name}_ch{ch}" for ch in range(n_chans) for name in base_names
     ]
-    args_list = [(ecg_single, sfreq, n_features) for ecg_single in ecg_data[:]]
-    processes = multiprocessing.cpu_count() if n_jobs in [-1, None] else n_jobs
-    # logger.info(f"Starting parallel processing with {processes} CPUS")
-    # with Pool(processes=processes) as pool:
-    #     results = pool.starmap(_morph_single, args_list)
-    results = []
-    for i, args in enumerate(args_list):
-        results.append(_morph_single_patient(*args))
+
+    args_list = ((ecg_single, sfreq, n_features) for ecg_single in ecg_data)
+    processes = _get_n_processes(n_jobs, ecg_data.shape[0])
+    if processes in [0, 1]:
+        results = [_morph_single_patient(*args) for args in args_list]
+    else:
+        logger.info(f"Starting parallel processing with {processes} CPUs")
+        with multiprocessing.Pool(processes=processes) as pool:
+            results = pool.starmap(_morph_single_patient, args_list)
     features = np.vstack(results)
     feature_df = pd.DataFrame(features, columns=column_names)
-    logger.info(
-        "Morphological feature extraction complete. Shape: %s. Time taken: %.1f s",
-        feature_df.shape,
-        time.time() - start,
-    )
+    _log_end("Morphological", start, feature_df.shape)
     return feature_df
 
 
-def _log_start(feature_name: str, shape: tuple) -> float:
-    logger.info("Starting %s feature extraction for %s samples...", feature_name, shape)
+def _get_n_processes(n_jobs: int | None, n_tasks: int) -> int:
+    """Get the number of processes to use for parallel processing."""
+    n_processes = os.cpu_count() if n_jobs in [-1, None] else n_jobs
+    return min(n_processes, n_tasks)
+
+
+def _log_end(feature_name: str, start_time: float, shape: tuple[int, int]) -> None:
+    """Log the end of feature extraction.
+
+    Args:
+        feature_name: Name of the feature type being extracted.
+        start_time: Start time of the feature extraction.
+        shape: Shape of the extracted features.
+    """
+    logger.info(
+        "Completed %s feature extraction. Shape: %s. Time taken: %.1f s",
+        feature_name,
+        shape,
+        time.time() - start_time,
+    )
+
+
+def _log_start(feature_name: str, n_samples: int) -> float:
+    """Log the start of feature extraction and return the current time.
+
+    Args:
+        feature_name: Name of the feature type being extracted.
+        n_samples: Number of samples.
+
+    Returns:
+        Current time.
+    """
+    logger.info(
+        "Starting %s feature extraction for %s samples...", feature_name, n_samples
+    )
     return time.time()
 
 
 def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
+    """Extract Welch's method power spectral density features from ECG data for each sample and channel.
+
+    This function calculates various Welch's method features, including:
+    - Log power ratio
+    - Band 0-0.5 Hz
+    - Band 0.5-4 Hz
+    - Band 4-15 Hz
+    - Band 15-40 Hz
+    - Band over 40 Hz
+    - Spectral entropy
+    - Total power
+    - Peak frequency
+
+    Args:
+        ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+
+    Returns:
+        DataFrame containing the extracted Welch's method features
+
+    Raises:
+        ValueError: If input data has incorrect dimensions
+    """
     assert_3_dims(ecg_data)
-    logger.info(
-        "Starting Welch feature extraction for %s samples...", ecg_data.shape[0]
-    )
-    start = time.time()
+    start = _log_start("Welch", ecg_data.shape[0])
     n_samples, n_channels, n_timepoints = ecg_data.shape
     flat_data = ecg_data.reshape(
         -1, n_timepoints
@@ -578,17 +784,23 @@ def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
         f"welch_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
     ]
     feature_df = pd.DataFrame(all_features, columns=column_names)
-    logger.info(
-        "Welch feature extraction complete. Shape: %s. Time taken: %.1f s",
-        feature_df.shape,
-        time.time() - start,
-    )
+    _log_end("Welch", start, feature_df.shape)
     return feature_df
 
 
-def _statistical_single(
+def _stat_single_patient(
     sample_data: np.ndarray, sfreq: float, n_features: int
 ) -> np.ndarray:
+    """Extract statistical features from a single sample of ECG data.
+
+    Args:
+        sample_data: Single sample of ECG data with shape (n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+        n_features: Number of features to extract
+
+    Returns:
+        Array containing the extracted statistical features
+    """
     features = np.zeros(sample_data.shape[0] * n_features)
     for ch, ch_data in enumerate(sample_data):
         sum_ = np.sum(ch_data)
@@ -673,6 +885,16 @@ def _statistical_single(
 def _morph_single_patient(
     sample_data: np.ndarray, sfreq: float, n_features: int
 ) -> np.ndarray:
+    """Extract morphological features from a single sample of ECG data.
+
+    Args:
+        sample_data: Single sample of ECG data with shape (n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+        n_features: Number of features to extract
+
+    Returns:
+        Array containing the extracted morphological features
+    """
     n_chans = sample_data.shape[0]
     features = np.zeros(n_chans * n_features)
     for ch_num, ch_data in enumerate(sample_data):
@@ -684,6 +906,16 @@ def _morph_single_patient(
 def _morph_single_channel(
     ch_data: np.ndarray, sfreq: float, n_features: int
 ) -> np.ndarray:
+    """Extract morphological features from a single channel of ECG data.
+
+    Args:
+        ch_data: Single channel of ECG data with shape (n_timepoints,)
+        sfreq: Sampling frequency of the ECG data in Hz
+        n_features: Number of features to extract
+
+    Returns:
+        Array containing the extracted morphological features
+    """
     _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
     r_peaks = peaks_info["ECG_R_Peaks"]
     n_r_peaks = len(r_peaks) if r_peaks is not None else 0

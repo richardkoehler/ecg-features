@@ -1097,12 +1097,14 @@ dependencies = [
 dev = [
     { name = "mypy" },
     { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
     { name = "tox" },
 ]
 lint = [
     { name = "ruff" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
 ]
 
 [package.metadata]
@@ -1121,11 +1123,13 @@ requires-dist = [
 dev = [
     { name = "mypy" },
     { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
     { name = "tox" },
 ]
 lint = [{ name = "ruff" }]
+test = [
+    { name = "pytest", specifier = ">=6.0" },
+    { name = "pytest-cov", specifier = ">=4.2.0" },
+]
 
 [[package]]
 name = "pydantic"

@@ -8,10 +8,9 @@ format that includes the logger name, log level, and message.
 import logging
 import pathlib
 import sys
-from typing import Union
 
-# Configure the root logger for the package
 logger = logging.getLogger(__package__)
+logger.setLevel(logging.INFO)
 logger.propagate = False
 _formatter = logging.Formatter("%(name)s | %(levelname)s | %(message)s")
 _console_handler = logging.StreamHandler(sys.stdout)
@@ -22,7 +21,7 @@ logger.addHandler(_console_handler)
 
 def set_log_level(level: int) -> None:
     """Set the logging level for the package logger.
-    
+
     Args:
         level: The logging level to set (e.g., logging.INFO, logging.DEBUG).
     """
@@ -31,16 +30,18 @@ def set_log_level(level: int) -> None:
         logger.setLevel(level)
 
 
-def set_log_file(fname: Union[str, pathlib.Path], overwrite: bool = False) -> None:
+def set_log_file(fname: str | pathlib.Path, overwrite: bool = False) -> None:
     """Add a file handler to the package logger.
-    
+
     Args:
         fname: Path to the log file.
         overwrite: If True, overwrite the log file if it exists. If False, append to it.
     """
     if isinstance(fname, str):
         fname = pathlib.Path(fname)
-    mode = "w" if overwrite else "a"
+    mode = "w"
+    if fname.exists() and not overwrite:
+        mode = "a"
     file_handler = logging.FileHandler(fname, mode=mode)
     file_handler.setFormatter(_formatter)
     logger.addHandler(file_handler)

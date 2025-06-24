@@ -35,8 +35,9 @@ classifiers = [
 ]
 
 [dependency-groups]
-dev = ["mypy", "pre-commit", "pytest", "pytest-cov", "tox"]
+dev = ["mypy", "pre-commit", "tox"]
 lint = ["ruff"]
+test = ["pytest>=6.0", "pytest-cov>=4.2.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -50,3 +51,11 @@ default-groups = "all"
 
 [tool.uv.sources]
 neurokit2 = { path = "../NeuroKit", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = "tests"
+python_files = "test_*.py"
+python_functions = "test_*"
+python_classes = "Test*"
+addopts = "-v --cov=pte_ecg --cov-report=term-missing"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
