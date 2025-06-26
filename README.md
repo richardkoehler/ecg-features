@@ -6,7 +6,7 @@
 <!-- ![PyPI version](https://img.shields.io/pypi/v/pte-ecg?color=blue) -->
 <!-- ![Build Status](https://img.shields.io/github/actions/workflow/status/richardkoehler/pte-ecg/python-package.yml?branch=main) -->
 
-**Python Tools for Electrophysiology (PTE) - ECG**
+**Python Tools for Electrocardiography (PTE) - ECG**
 
 A Python package for extracting features from ECG signals.
 
@@ -49,7 +49,7 @@ pip install git+https://github.com/richardkoehler/pte-ecg.git
 ### Using uv
 
 ```bash
-uv add git+https://github.com/richardkoehler/pte-ecg.git
+uv add git+https://github.com/richardkoehler/pte-ecg
 ```
 
 ## Development setup
