@@ -688,7 +688,7 @@ wheels = [
 [[package]]
 name = "neurokit2"
 version = "0.2.11"
-source = { editable = "../NeuroKit" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -699,41 +699,10 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "antropy", marker = "extra == 'test'" },
-    { name = "astropy", marker = "extra == 'test'" },
-    { name = "bioread", marker = "extra == 'test'" },
-    { name = "biosppy", marker = "extra == 'test'", specifier = "==0.6.1" },
-    { name = "coverage", marker = "extra == 'test'" },
-    { name = "cvxopt", marker = "extra == 'test'" },
-    { name = "emd-signal", marker = "extra == 'test'" },
-    { name = "entropyhub", marker = "extra == 'test'" },
-    { name = "llvmlite", marker = "extra == 'test'", specifier = ">=0.44.0" },
-    { name = "matplotlib", specifier = ">=3.5.0" },
-    { name = "matplotlib", marker = "extra == 'test'", specifier = ">=3.5.0" },
-    { name = "mne", marker = "extra == 'test'" },
-    { name = "nolds", marker = "extra == 'test'" },
-    { name = "numba", marker = "extra == 'test'", specifier = ">=0.61.0" },
-    { name = "numpy" },
-    { name = "numpy", marker = "extra == 'test'" },
-    { name = "pandas" },
-    { name = "pandas", marker = "extra == 'test'" },
-    { name = "plotly", marker = "extra == 'test'" },
-    { name = "pyentrp", marker = "extra == 'test'" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pywavelets", marker = "extra == 'test'" },
-    { name = "requests" },
-    { name = "requests", marker = "extra == 'test'" },
-    { name = "scikit-learn", specifier = ">=1.0.0" },
-    { name = "scikit-learn", marker = "extra == 'test'", specifier = ">=1.0.0" },
-    { name = "scipy" },
-    { name = "scipy", marker = "extra == 'test'" },
-    { name = "ts2vg", marker = "extra == 'test'" },
-    { name = "wfdb", marker = "extra == 'test'" },
+sdist = { url = "https://files.pythonhosted.org/packages/32/cc/745ec7826d1f6ceca29406d1cd9762fd23103c15546b5b85867b5111aacc/neurokit2-0.2.11.tar.gz", hash = "sha256:c05f4144168918d401b805447a1d994ed31c63912eaece8bbee25f3acf463e5d", size = 20801501, upload-time = "2025-05-13T11:17:29.346Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f6/2e/eb14351b2d2fcdb6f9821553c36db0788ff8d9bc5b906480ab3d637f2227/neurokit2-0.2.11-py2.py3-none-any.whl", hash = "sha256:93e70203c5059faa88075d5d5b7c4cb76c42c27160f8b7d11f750e55db935ef8", size = 696458, upload-time = "2025-05-13T11:17:27.373Z" },
 ]
-provides-extras = ["test"]
 
 [[package]]
 name = "nodeenv"
@@ -1110,7 +1079,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "mne", specifier = ">=1.9.0" },
-    { name = "neurokit2", editable = "../NeuroKit" },
+    { name = "neurokit2", specifier = ">=0.2.11" },
     { name = "nolds", specifier = ">=0.6.2" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "pandas", specifier = ">=2.3.0" },

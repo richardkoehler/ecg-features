@@ -14,7 +14,6 @@ def test_get_features_basic(test_data: tuple[np.ndarray, int]):
     ecg_data, sfreq = test_data
 
     settings = pte_ecg.Settings()
-    settings.features.nonlinear.enabled = False  # Too slow right now
 
     # Extract features with default settings
     features = pte_ecg.get_features(ecg_data, sfreq=sfreq, settings=settings)
