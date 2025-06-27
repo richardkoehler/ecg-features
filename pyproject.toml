@@ -6,7 +6,7 @@ authors = [{ name = "Richard M. Köhler", email = "richard.koehler@outlook.de" }
 maintainers = [
     { name = "Richard M. Köhler", email = "richard.koehler@outlook.de" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "mne>=1.9.0",
     "neurokit2>=0.2.11",
@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.11.7",
     "pywavelets>=1.8.0", # This is actually a neurokit2 dependency
     "scipy>=1.15.3",
+    "ts2vg>=1.2.4",
 ]
 dynamic = ["version"]
 keywords = ["ecg", "features", "timeseries", "electrocardiogram"]

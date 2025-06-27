@@ -9,6 +9,7 @@ import multiprocessing
 import os
 import time
 import warnings
+from typing import Literal
 
 import neurokit2 as nk
 
@@ -27,6 +28,26 @@ from ._logging import logger
 
 EPS = 1e-10  # Small constant for numerical stability
 
+_METHODS_FINDPEAKS = [
+    "neurokit",
+    "pantompkins",
+    "nabian",
+    "slopesumfunction",
+    "zong",
+    "hamilton",
+    "christov",
+    "engzeemod",
+    "elgendi",
+    "kalidas",
+    "rodrigues",
+    "vg",
+    "emrich2023",
+    "promac",
+    # "gamboa", # Does not currently work reliably
+    # "manikandan", # Does not currently work reliably
+    # "martinez",# Does not currently work reliably
+]
+
 
 class BaseFeature(pydantic.BaseModel):
     """Base class for feature extraction settings.
@@ -35,7 +56,7 @@ class BaseFeature(pydantic.BaseModel):
         enabled: Whether this feature type should be extracted.
     """
 
-    enabled: bool = False
+    enabled: bool = True
 
 
 class FFTArgs(BaseFeature):
@@ -45,8 +66,6 @@ class FFTArgs(BaseFeature):
         enabled: Whether to compute FFT features.
     """
 
-    enabled: bool = True
-
 
 class WelchArgs(BaseFeature):
     """Settings for Welch's method power spectral density feature extraction.
@@ -54,8 +73,6 @@ class WelchArgs(BaseFeature):
     Attributes:
         enabled: Whether to compute Welch spectral features.
     """
-
-    enabled: bool = True
 
 
 class StatisticalArgs(BaseFeature):
@@ -66,7 +83,6 @@ class StatisticalArgs(BaseFeature):
         n_jobs: Number of parallel jobs to run. -1 means using all processors.
     """
 
-    enabled: bool = True
     n_jobs: int = -1
 
 
@@ -78,7 +94,6 @@ class MorphologicalArgs(BaseFeature):
         n_jobs: Number of parallel jobs to run. -1 means using all processors.
     """
 
-    enabled: bool = True
     n_jobs: int = -1
 
 
@@ -89,7 +104,8 @@ class NonlinearArgs(BaseFeature):
         enabled: Whether to compute nonlinear features.
     """
 
-    enabled: bool = True
+    enabled: bool = False
+    n_jobs: int = -1
 
 
 class FeatureSettings(pydantic.BaseModel):
@@ -302,20 +318,6 @@ def get_statistical_features(
     - Kurtosis
     - Peak-to-peak
     - Autocorrelation
-    - Time to first peak
-    - R-peak amplitude
-    - Duration between peaks
-    - Amplitude between peaks
-    - RR interval mean
-    - RR interval std
-    - Heart rate
-    - HRV
-    - RR interval difference mean
-    - RR interval median
-    - RR interval IQR
-    - RR interval skewness
-    - RR interval kurtosis
-
     Args:
         ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
         sfreq: Sampling frequency of the ECG data in Hz
@@ -329,6 +331,62 @@ def get_statistical_features(
     """
     assert_3_dims(ecg_data)
     start = _log_start("Statistical", ecg_data.shape[0])
+    args_list = ((ecg_single, sfreq) for ecg_single in ecg_data)
+    processes = _get_n_processes(n_jobs, ecg_data.shape[0])
+    if processes in [0, 1]:
+        results = [_stat_single_patient(*args) for args in args_list]
+    else:
+        logger.info(f"Starting parallel processing with {processes} CPUs")
+        with multiprocessing.Pool(processes=processes) as pool:
+            results = pool.starmap(_stat_single_patient, args_list)
+    feature_df = pd.DataFrame(results)
+    _log_end("Statistical", start, feature_df.shape)
+    return feature_df
+
+
+def _stat_single_patient(sample_data: np.ndarray, sfreq: float) -> dict[str, float]:
+    """Extract statistical features from a single sample of ECG data.
+
+    Args:
+        sample_data: Single sample of ECG data with shape (n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+
+    Returns:
+        Dictionary containing the extracted statistical features
+    """
+    sum_ = np.sum(sample_data, axis=1)
+    mean = np.mean(sample_data, axis=1)
+    median = np.median(sample_data, axis=1)
+    mode = scipy.stats.mode(sample_data, axis=1, keepdims=False).mode
+    variance = np.var(sample_data, axis=1)
+    range_ = np.ptp(sample_data, axis=1)
+    min_ = np.min(sample_data, axis=1)
+    max_ = np.max(sample_data, axis=1)
+    iqr = np.percentile(sample_data, 75, axis=1) - np.percentile(
+        sample_data, 25, axis=1
+    )
+    skewness = scipy.stats.skew(sample_data, axis=1)
+    kurt = scipy.stats.kurtosis(sample_data, axis=1)
+    peak_to_peak = max_ - min_
+    autocorr = _autocorr_lag1(sample_data)
+    feature_arr = np.stack(
+        [
+            sum_,
+            mean,
+            median,
+            mode,
+            variance,
+            range_,
+            min_,
+            max_,
+            iqr,
+            skewness,
+            kurt,
+            peak_to_peak,
+            autocorr,
+        ],
+        axis=1,
+    )
     base_names = [
         "sum",
         "mean",
@@ -343,39 +401,34 @@ def get_statistical_features(
         "kurt",
         "peak_to_peak",
         "autocorr",
-        "time_to_first_peak",
-        "r_peak_amp",
-        "duration_between_peaks",
-        "amplitude_between_peaks",
-        "rr_mean",
-        "rr_std",
-        "heart_rate",
-        "hrv",
-        "rr_diff_mean",
-        "rr_median",
-        "rr_iqr",
-        "rr_skew",
-        "rr_kurt",
     ]
     column_names = [
-        f"stat_{name}_ch{ch}" for ch in range(ecg_data.shape[1]) for name in base_names
+        f"stat_{name}_ch{ch}"
+        for ch in range(sample_data.shape[0])
+        for name in base_names
     ]
-    n_features = len(base_names)
-    args_list = ((ecg_single, sfreq, n_features) for ecg_single in ecg_data)
-    processes = _get_n_processes(n_jobs, ecg_data.shape[0])
-    if processes in [0, 1]:
-        results = [_stat_single_patient(*args) for args in args_list]
-    else:
-        logger.info(f"Starting parallel processing with {processes} CPUs")
-        with multiprocessing.Pool(processes=processes) as pool:
-            results = pool.starmap(_stat_single_patient, args_list)
-    feature_array = np.vstack(results)
-    feature_df = pd.DataFrame(feature_array, columns=column_names)
-    _log_end("Statistical", start, feature_df.shape)
-    return feature_df
+    feature_arr = feature_arr.flatten()
+    features = {
+        name: value for name, value in zip(column_names, feature_arr, strict=True)
+    }
+    return features
 
 
-def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
+def _autocorr_lag1(sample_data: np.ndarray) -> np.ndarray:
+    x = sample_data[:, :-1]
+    y = sample_data[:, 1:]
+    x_mean = np.mean(x, axis=1, keepdims=True)
+    y_mean = np.mean(y, axis=1, keepdims=True)
+    numerator = np.sum((x - x_mean) * (y - y_mean), axis=1)
+    denominator = np.sqrt(
+        np.sum((x - x_mean) ** 2, axis=1) * np.sum((y - y_mean) ** 2, axis=1)
+    )
+    return numerator / denominator
+
+
+def get_nonlinear_features(
+    ecg_data: np.ndarray, sfreq: float, n_jobs: int = -1
+) -> pd.DataFrame:
     """Extract nonlinear features from ECG data for each sample and channel.
 
     This function calculates 30 different nonlinear metrics per channel that capture
@@ -401,138 +454,134 @@ def get_nonlinear_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     """
     assert_3_dims(ecg_data)
     start = _log_start("Nonlinear", ecg_data.shape[0])
-    base_names = [
-        "sample_entropy",
-        "hurst_exponent",
-        "higuchi_fd",
-        "recurrence_rate",
-        "dfa_alpha1",
-        "dfa_alpha2",
-        "sd1",
-        "sd2",
-        "sd1_sd2_ratio",
-        "approximate_entropy",
-        "permutation_entropy",
-        "lempel_ziv_complexity",
-        "largest_lyapunov_exponent",
-        "correlation_dimension",
-        "fractal_dimension_katz",
-        "time_irreversibility",
-        "multiscale_entropy",
-        "rqa_entropy",
-        "recurrence_variance",
-        "dynamic_stability",
-        "symbolic_dynamics",
-        "sample_entropy_change_rate",
-        "change_dfa_alpha",
-        "variance",
-        "singular_spectrum_entropy",
-        "dynamic_variance",
-        "recurrence_network_measures",
-        "delay_embedding_dimension",
-        "delay_time",
-        "complexity_loss",
-    ]
-    n_samples, n_chans, _ = ecg_data.shape
-    n_features = len(base_names)
-    column_names = [
-        f"nonlinear_{name}_ch{ch}" for ch in range(n_chans) for name in base_names
-    ]
-    features = np.zeros((n_samples, n_chans * n_features))
-    for sample, sample_data in enumerate(ecg_data):
-        for ch, ch_data in enumerate(sample_data):
-            sample_entropy = hurst_exponent = higuchi_fd = recurrence_rate = 0
-            dfa_alpha1 = dfa_alpha2 = sd1 = sd2 = sd1_sd2_ratio = 0.0
-            approximate_entropy = permutation_entropy = lempel_ziv_complexity = 0
-            largest_lyapunov_exponent = correlation_dimension = (
-                fractal_dimension_katz
-            ) = 0
-            time_irreversibility = multiscale_entropy = rqa_entropy = (
-                recurrence_variance
-            ) = 0
-            dynamic_stability = symbolic_dynamics = sample_entropy_change_rate = 0
-            change_dfa_alpha = nonlinear_variance = singular_spectrum_entropy = 0
-            dynamic_variance = recurrence_network_measures = (
-                delay_embedding_dimension
-            ) = 0
-            delay_time = complexity_loss = 0
-
-            # Sample Entropy (Komplexitätsmaß)
-            sample_entropy = nolds.sampen(ch_data, emb_dim=2)
-            # Hurst Exponent (Langzeitabhängigkeit)
-            hurst_exponent = nolds.hurst_rs(ch_data)
-            # Higuchi Fractal Dimension
-            higuchi_fd = nk.fractal_higuchi(ch_data, k_max="default")[0]
-            # DFA (Detrended Fluctuation Analysis)
-            dfa_alpha1 = nolds.dfa(ch_data, nvals=[4, 8, 16, 32])
-            dfa_alpha2 = nolds.dfa(ch_data, nvals=[64, 128, 256])
-            # Poincaré Plot Features
-            ecg_cleaned = nk.ecg_clean(ch_data, sampling_rate=sfreq)
-            _, peaks_info = nk.ecg_peaks(ecg_cleaned, sampling_rate=sfreq)
-            rpeaks = peaks_info["ECG_R_Peaks"]
-            if len(rpeaks) > 1:
-                rr_intervals = np.diff(rpeaks) / sfreq
-                sd1 = np.std(np.diff(rr_intervals) / np.sqrt(2))
-                sd2 = np.std(rr_intervals)
-                sd1_sd2_ratio = sd1 / (sd2 + 1e-10)
-            # Largest Lyapunov Exponent (Lagezeitabhängigkeit)
-            largest_lyapunov_exponent = nolds.lyap_r(
-                ch_data, emb_dim=3, lag=1, min_tsep=10
-            )
-            # Correlation Dimension
-            correlation_dimension = nolds.corr_dim(ch_data, emb_dim=2)
-
-            #     # Approximate Entropy
-            #     approximate_entropy = pyeeg.ap_entropy(
-            #         normalized_channel, 2, 0.2 * np.std(normalized_channel)
-            #     )
-            #     # Permutation Entropy
-            #     permutation_entropy = pyeeg.permutation_entropy(
-            #         normalized_channel, 3, 1
-            #     )
-            #     # Lempel-Ziv Complexity
-            #     binary_seq = np.array(
-            #         normalized_channel > np.mean(normalized_channel)
-            #     ).astype(int)
-            #     binary_str = "".join(binary_seq.astype(str))
-            #     lempel_ziv_complexity = pyeeg.lzc(binary_str)
-
-            channel_features = [
-                sample_entropy,
-                hurst_exponent,
-                higuchi_fd,
-                recurrence_rate,
-                dfa_alpha1,
-                dfa_alpha2,
-                sd1,
-                sd2,
-                sd1_sd2_ratio,
-                approximate_entropy,
-                permutation_entropy,
-                lempel_ziv_complexity,
-                largest_lyapunov_exponent,
-                correlation_dimension,
-                fractal_dimension_katz,
-                time_irreversibility,
-                multiscale_entropy,
-                rqa_entropy,
-                recurrence_variance,
-                dynamic_stability,
-                symbolic_dynamics,
-                sample_entropy_change_rate,
-                change_dfa_alpha,
-                nonlinear_variance,
-                singular_spectrum_entropy,
-                dynamic_variance,
-                recurrence_network_measures,
-                delay_embedding_dimension,
-                delay_time,
-                complexity_loss,
-            ]
-            features[sample, ch * n_features : (ch + 1) * n_features] = channel_features
-    feature_df = pd.DataFrame(features, columns=column_names)
+    args_list = (
+        (sample_num, ecg_single, sfreq)
+        for sample_num, ecg_single in enumerate(ecg_data)
+    )
+    processes = _get_n_processes(n_jobs, ecg_data.shape[0])
+    if processes in [0, 1]:
+        results = [_nonlinear_single_patient(*args) for args in args_list]
+    else:
+        logger.info(f"Starting parallel processing with {processes} CPUs")
+        with multiprocessing.Pool(processes=processes) as pool:
+            results = pool.starmap(_nonlinear_single_patient, args_list)
+    feature_df = pd.DataFrame(results)
     _log_end("Nonlinear", start, feature_df.shape)
     return feature_df
+
+
+def _nonlinear_single_patient(
+    sample_num: int, sample_data: np.ndarray, sfreq: float
+) -> dict[str, float]:
+    logger.info(f"Processing sample number: {sample_num}...")
+    features: dict[str, float] = {}
+    for ch_num, ch_data in enumerate(sample_data):
+        ch_feat = _nonlinear_single_channel(ch_data, sfreq)
+        features.update(
+            (f"nonlinear_{key}_ch{ch_num}", value) for key, value in ch_feat.items()
+        )
+    return features
+
+
+def _nonlinear_single_channel(ch_data: np.ndarray, sfreq: float) -> dict[str, float]:
+    """Extract nonlinear features from a single channel of ECG data.
+
+    Args:
+        ch_data: Single channel of ECG data with shape (n_timepoints,)
+        sfreq: Sampling frequency of the ECG data in Hz
+
+    Returns:
+        dict containing the extracted nonlinear features
+    """
+    features: dict[str, float] = {}
+    features["sample_entropy"] = nolds.sampen(ch_data, emb_dim=2)
+    features["hurst_exponent"] = nolds.hurst_rs(ch_data)
+    # DFA (Detrended Fluctuation Analysis)
+    half_len = len(ch_data) // 2
+    features["dfa_alpha1"] = (
+        nolds.dfa(ch_data, nvals=[4, 8, 16, 32]) if half_len > 32 else np.nan
+    )
+    features["dfa_alpha2"] = (
+        nolds.dfa(ch_data, nvals=[64, 128, 256]) if half_len > 256 else np.nan
+    )
+    features["change_dfa_alpha"] = (
+        nolds.dfa(ch_data[:half_len], nvals=[4, 8, 16])
+        - nolds.dfa(ch_data[half_len:], nvals=[4, 8, 16])
+        if half_len > 16
+        else np.nan
+    )
+
+    embedding_dim, _ = nk.complexity_dimension(ch_data, dimension_max=10)
+    features["embedding_dimension"] = embedding_dim
+    # Lyapunov
+    lyap_exp = features["largest_lyapunov_exponent"] = nolds.lyap_r(
+        ch_data, emb_dim=embedding_dim
+    )
+    features["dynamic_stability"] = np.exp(-np.abs(lyap_exp))
+    features["correlation_dimension"] = nolds.corr_dim(ch_data, emb_dim=embedding_dim)
+    # Too slow
+    # # Fractal Dimension Higuchi
+    # features["fractal_higuchi"] = nk.fractal_higuchi(ch_data, k_max="default")[
+    #     0
+    # ]
+    # Fractal Dimension Katz
+    features["fractal_katz"] = nk.fractal_katz(ch_data)[0]
+
+    # Recurrence measures
+
+    rqa, _ = nk.complexity_rqa(ch_data, dimension=embedding_dim)
+    rec_rate = rqa["RecurrenceRate"].iat[0]
+    features["recurrence_rate"] = rec_rate
+    features["recurrence_variance"] = rec_rate * (1 - rec_rate)
+    features["recurrence_network_measures"] = (
+        rqa["Determinism"].iat[0] + rqa["Laminarity"].iat[0]
+    ) / 2
+    features["rqa_l_entropy"] = rqa["LEn"].iat[0]
+
+    diffs = np.diff(ch_data)
+    features["time_irreversibility"] = np.mean(diffs**3) / (np.mean(diffs**2) ** 1.5)
+    features["nonlinear_variance"] = np.var(diffs**2)
+
+    window_duration_sec = min(1, len(ch_data) / sfreq)
+    window_size = int(window_duration_sec * sfreq)
+    step_size = window_size // 2
+    windows = np.lib.stride_tricks.sliding_window_view(ch_data, window_size)[
+        ::step_size
+    ]
+    local_vars = np.var(windows, axis=1)
+    features["dynamic_variance"] = np.var(local_vars)
+
+    features["multiscale_entropy"], _ = nk.entropy_sample(
+        ch_data, dimension=embedding_dim, scale=2
+    )
+
+    above_median = ch_data > np.median(ch_data)
+    features["symbolic_dynamics"] = np.sum(np.abs(np.diff(above_median))) / (
+        len(above_median) - 1
+    )
+    entropy1, _ = nk.entropy_sample(ch_data[:half_len], dimension=embedding_dim)
+    entropy2, _ = nk.entropy_sample(ch_data[half_len:], dimension=embedding_dim)
+    features["sample_entropy_change_rate"] = (
+        (entropy2 - entropy1) / (entropy1 + EPS) if entropy1 != 0 else np.nan
+    )
+    # Shannon-Entropy
+    N = len(ch_data)
+    K = min(20, N // 2)  # Einbettungsdimension begrenzen
+    hankel = np.zeros((N - K + 1, K))
+    for i in range(K):
+        hankel[:, i] = ch_data[i : i + N - K + 1]
+    s = np.linalg.svd(hankel, compute_uv=False)
+    s_norm = s / np.sum(s) if np.sum(s) > 0 else np.ones_like(s) / len(s)
+    features["singular_spectrum_entropy"] = -np.sum(s_norm * np.log2(s_norm + EPS))
+
+    b, a = scipy.signal.butter(2, 0.2)  # Lowpass
+    filtered = scipy.signal.filtfilt(b, a, ch_data)
+    entropy_orig, _ = nk.entropy_sample(ch_data, dimension=embedding_dim)
+    entropy_filt, _ = nk.entropy_sample(filtered, dimension=embedding_dim)
+    features["complexity_loss"] = (
+        (entropy_orig - entropy_filt) / entropy_orig if entropy_orig != 0 else np.nan
+    )
+    return features
 
 
 def get_morphological_features(
@@ -540,35 +589,7 @@ def get_morphological_features(
 ) -> pd.DataFrame:
     """Extract morphological features from ECG data for each sample and channel.
 
-    This function calculates various morphological features, including:
-    - QRS duration
-    - QT interval
-    - PQ interval
-    - P duration
-    - T duration
-    - ST duration
-    - R amplitude
-    - S amplitude
-    - P amplitude
-    - T amplitude
-    - Q amplitude
-    - PQ dispersion
-    - T dispersion
-    - ST dispersion
-    - RT dispersion
-    - QRS dispersion
-    - QT dispersion
-    - P dispersion
-    - R point amplitude
-    - P area
-    - QRS area
-    - T area
-    - R slope
-    - T slope
-    - RT duration
-    - QRS curve length
-    - T curve slope
-    - R symmetry
+    This function calculates various morphological features.
 
     Args:
         ecg_data: ECG data with shape (n_samples, n_channels, n_timepoints)
@@ -583,43 +604,10 @@ def get_morphological_features(
     """
     assert_3_dims(ecg_data)
     start = _log_start("Morphological", ecg_data.shape[0])
-    base_names = [
-        "qrs_duration",
-        "qt_interval",
-        "pq_interval",
-        "p_duration",
-        "t_duration",
-        "st_duration",
-        "r_amplitude",
-        "s_amplitude",
-        "p_amplitude",
-        "t_amplitude",
-        "q_amplitude",
-        "pq_dispersion",
-        "t_dispersion",
-        "st_dispersion",
-        "rt_dispersion",
-        "qrs_dispersion",
-        "qt_dispersion",
-        "p_dispersion",
-        "r_point_amplitude",
-        "p_area",
-        "qrs_area",
-        "t_area",
-        "r_slope",
-        "t_slope",
-        "rt_duration",
-        "qrs_curve_length",
-        "t_curve_slope",
-        "r_symmetry",
-    ]
-    n_chans = ecg_data.shape[1]
-    n_features = len(base_names)
-    column_names = [
-        f"morph_{name}_ch{ch}" for ch in range(n_chans) for name in base_names
-    ]
-
-    args_list = ((ecg_single, sfreq, n_features) for ecg_single in ecg_data)
+    args_list = (
+        (sample_num, ecg_single, sfreq)
+        for sample_num, ecg_single in enumerate(ecg_data)
+    )
     processes = _get_n_processes(n_jobs, ecg_data.shape[0])
     if processes in [0, 1]:
         results = [_morph_single_patient(*args) for args in args_list]
@@ -627,10 +615,315 @@ def get_morphological_features(
         logger.info(f"Starting parallel processing with {processes} CPUs")
         with multiprocessing.Pool(processes=processes) as pool:
             results = pool.starmap(_morph_single_patient, args_list)
-    features = np.vstack(results)
-    feature_df = pd.DataFrame(features, columns=column_names)
+    feature_df = pd.DataFrame(results)
     _log_end("Morphological", start, feature_df.shape)
     return feature_df
+
+
+def _morph_single_patient(
+    sample_num: int, sample_data: np.ndarray, sfreq: float
+) -> dict[str, float]:
+    """Extract morphological features from a single sample of ECG data.
+
+    Args:
+        sample_data: Single sample of ECG data with shape (n_channels, n_timepoints)
+        sfreq: Sampling frequency of the ECG data in Hz
+
+    Returns:
+        dict containing the extracted morphological features
+    """
+    logger.info(f"Processing sample number: {sample_num}...")
+    features: dict[str, float] = {}
+    flat_chs = np.all(np.isclose(sample_data, sample_data[:, 0:1]), axis=1)
+    if np.all(flat_chs):
+        logger.warning("All channels are flat lines. Skipping morphological features.")
+        return features
+    for ch_num, (ch_data, is_flat) in enumerate(zip(sample_data, flat_chs)):
+        if is_flat:
+            logger.warning(
+                f"Channel {ch_num} is flat line. Skipping morphological features."
+            )
+            continue
+        ch_feat = _morph_single_channel(ch_data, sfreq)
+        features.update(
+            (f"morph_{key}_ch{ch_num}", value) for key, value in ch_feat.items()
+        )
+    return features
+
+
+def _get_r_peaks(
+    ch_data: np.ndarray, sfreq: float
+) -> tuple[np.ndarray | None, int, Literal[*_METHODS_FINDPEAKS]]:
+    peaks_per_method: dict[Literal[*_METHODS_FINDPEAKS], np.ndarray] = {}
+    max_n_peaks = 0
+    for method in _METHODS_FINDPEAKS:
+        _, peaks_info = nk.ecg_peaks(
+            ch_data,
+            sampling_rate=np.rint(sfreq).astype(int)
+            if method in ["zong", "emrich2023"]
+            else sfreq,
+            method=method,
+        )
+        r_peaks: np.ndarray | None = peaks_info["ECG_R_Peaks"]
+        n_r_peaks = len(r_peaks) if r_peaks is not None else 0
+        if not n_r_peaks:
+            logger.debug(f"No R-peaks detected for method '{method}'.")
+            continue
+        max_n_peaks = max(max_n_peaks, n_r_peaks)
+        peaks_per_method[method] = r_peaks
+        if n_r_peaks > 1:  # We need at least 2 R-peaks for some features
+            return r_peaks, n_r_peaks, method
+    if not max_n_peaks:
+        return None, max_n_peaks, None
+    for method, r_peaks in peaks_per_method.items():
+        return r_peaks, max_n_peaks, method  # return first item
+
+
+def _morph_single_channel(ch_data: np.ndarray, sfreq: float) -> dict[str, float]:
+    """Extract morphological features from a single channel of ECG data.
+
+    Args:
+        ch_data: Single channel of ECG data with shape (n_timepoints,)
+        sfreq: Sampling frequency of the ECG data in Hz
+
+    Returns:
+        dict containing the extracted morphological features
+    """
+    features: dict[str, float] = {}
+    r_peaks, n_r_peaks, r_peak_method = _get_r_peaks(ch_data, sfreq)
+    if not n_r_peaks:
+        logger.warning("No R-peaks detected. Skipping morphological features.")
+        return {}
+    waves_dict: dict = {}
+    for method in ["dwt", "prominence", "peak", "cwt"]:
+        if n_r_peaks < 2 and method in {"prominence", "cwt"}:
+            logger.info("Not enough R-peaks for prominence or cwt method.")
+            continue
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", nk.misc.NeuroKitWarning)
+                _, waves_dict = nk.ecg_delineate(
+                    ch_data,
+                    rpeaks=r_peaks,
+                    sampling_rate=sfreq,
+                    method=method,
+                )
+            break
+        except nk.misc.NeuroKitWarning as e:
+            if "Too few peaks detected" in str(e):
+                logger.warning(f"Peak detection failed with method '{method}': {e}")
+            else:
+                raise
+    if not waves_dict:
+        raise ECGDelineationError("ECG delineation failed with all available methods.")
+
+    # Extrahiere Intervalle
+    p_peaks = waves_dict["ECG_P_Peaks"]
+    q_peaks = waves_dict["ECG_Q_Peaks"]
+    s_peaks = waves_dict["ECG_S_Peaks"]
+    t_peaks = waves_dict["ECG_T_Peaks"]
+
+    p_onsets = waves_dict["ECG_P_Onsets"]
+    p_offsets = waves_dict["ECG_P_Offsets"]
+    t_onsets = waves_dict["ECG_T_Onsets"]
+    t_offsets = waves_dict["ECG_T_Offsets"]
+
+    n_p_peaks = len(p_peaks) if p_peaks is not None else 0
+    n_q_peaks = len(q_peaks) if q_peaks is not None else 0
+    n_s_peaks = len(s_peaks) if s_peaks is not None else 0
+    n_t_peaks = len(t_peaks) if t_peaks is not None else 0
+    n_p_onsets = len(p_onsets) if p_onsets is not None else 0
+    n_p_offsets = len(p_offsets) if p_offsets is not None else 0
+    n_t_onsets = len(t_onsets) if t_onsets is not None else 0
+    n_t_offsets = len(t_offsets) if t_offsets is not None else 0
+
+    # QRS-Dauer
+    if n_q_peaks and n_s_peaks:
+        # Berechne durchschnittliche QRS-Dauer
+        qrs_durations: list[float] = []
+        max_index = min(n_q_peaks, n_s_peaks)
+        for q, s in zip(q_peaks[:max_index], s_peaks[:max_index]):
+            if q >= s or np.isnan(q) or np.isnan(s):
+                continue
+            qrs_durations.append((s - q) / sfreq * 1000)  # in ms
+        if qrs_durations:
+            features["qrs_duration"] = np.mean(qrs_durations)
+            features["qrs_dispersion"] = np.std(qrs_durations)
+
+    # QT-Intervall
+    if n_q_peaks and n_t_peaks:
+        qt_intervals = []
+        max_index = min(n_q_peaks, n_t_peaks)
+        for q, t in zip(q_peaks[:max_index], t_peaks[:max_index]):
+            if q >= t or np.isnan(q) or np.isnan(t):
+                continue
+            qt_intervals.append((t - q) / sfreq * 1000)  # in ms
+        if qt_intervals:
+            features["qt_interval"] = np.mean(qt_intervals)
+            features["qt_dispersion"] = np.std(qt_intervals)
+
+    # PQ-Intervall
+    if n_p_peaks and n_q_peaks:
+        pq_intervals = []
+        max_index = min(n_p_peaks, n_q_peaks)
+        for p, q in zip(p_peaks[:max_index], q_peaks[:max_index]):
+            if p >= q or np.isnan(p) or np.isnan(q):
+                continue
+            pq_intervals.append((q - p) / sfreq * 1000)  # in ms
+        if pq_intervals:
+            features["pq_interval"] = np.mean(pq_intervals)
+            features["pq_dispersion"] = np.std(pq_intervals)
+
+    # P-Dauer
+    if n_p_onsets and n_p_offsets:
+        p_durations = []
+        max_index = min(n_p_onsets, n_p_offsets)
+        for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
+            if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
+                continue
+            p_durations.append((p_off - p_on) / sfreq * 1000)
+        if p_durations:
+            features["p_duration"] = np.mean(p_durations)
+            features["p_dispersion"] = np.std(p_durations)
+
+    # T-Dauer
+    if n_t_onsets and n_t_offsets:
+        t_durations = []
+        max_index = min(n_t_onsets, n_t_offsets)
+        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
+            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
+                continue
+            t_durations.append((t_off - t_on) / sfreq * 1000)
+        if t_durations:
+            features["t_duration"] = np.mean(t_durations)
+            features["t_dispersion"] = np.std(t_durations)
+
+    # ST-Dauer
+    if n_s_peaks and n_t_onsets:
+        st_durations = []
+        max_index = min(n_s_peaks, n_t_onsets)
+        for s, t_on in zip(s_peaks[:max_index], t_onsets[:max_index]):
+            if s >= t_on or np.isnan(s) or np.isnan(t_on):
+                continue
+            st_durations.append(t_on - s)
+        if st_durations:
+            features["st_duration"] = np.mean(st_durations) / sfreq * 1000
+            features["st_dispersion"] = np.std(st_durations) / sfreq * 1000
+
+    # RT-Dauer
+    if n_r_peaks and n_t_onsets:
+        rt_durations = []
+        max_index = min(n_r_peaks, n_t_onsets)
+        for r, t_on in zip(r_peaks[:max_index], t_onsets[:max_index]):
+            if r >= t_on or np.isnan(r) or np.isnan(t_on):
+                continue
+            rt_durations.append((t_on - r) / sfreq * 1000)
+        if rt_durations:
+            features["rt_duration"] = np.mean(rt_durations)
+            features["rt_dispersion"] = np.std(rt_durations)
+
+    # Flächen (Integrale unter den Kurven)
+    if n_p_onsets and n_p_offsets:
+        p_areas = []
+        max_index = min(n_p_onsets, n_p_offsets)
+        for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
+            if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
+                continue
+            p_areas.append(np.sum(np.abs(ch_data[p_on:p_off])))
+        if p_areas:
+            features["p_area"] = np.mean(p_areas)
+
+    # T Area
+    if n_t_onsets and n_t_offsets:
+        t_areas = []
+        max_index = min(n_t_onsets, n_t_offsets)
+        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
+            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
+                continue
+            t_areas.append(np.sum(np.abs(ch_data[t_on:t_off])))
+        if t_areas:
+            features["t_area"] = np.mean(t_areas)
+
+    # R Slope
+    if n_r_peaks and n_q_peaks:
+        r_slopes = []
+        max_index = min(n_r_peaks, n_q_peaks)
+        for r, q in zip(r_peaks[:max_index], q_peaks[:max_index]):
+            if r < q or np.isnan(r) or np.isnan(q):
+                continue
+            delta_y = ch_data[r] - ch_data[q]
+            delta_x = (r - q) / sfreq
+            if delta_x > 0:
+                r_slopes.append(delta_y / delta_x)
+        if r_slopes:
+            features["r_slope"] = np.mean(r_slopes)
+
+    # T Slope
+    if n_t_onsets and n_t_offsets:
+        t_slopes = []
+        max_index = min(n_t_onsets, n_t_offsets)
+        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
+            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
+                continue
+            delta_y = ch_data[t_on] - ch_data[t_off]
+            delta_x = (t_on - t_off) / sfreq
+            if delta_x > 0:
+                t_slopes.append(delta_y / delta_x)
+        if t_slopes:
+            features["t_slope"] = np.mean(t_slopes)
+
+    # Amplituden
+    if n_p_peaks:
+        p_amplitudes = [ch_data[p] for p in p_peaks if not np.isnan(p)]
+        if p_amplitudes:
+            features["p_amplitude"] = np.mean(p_amplitudes)
+
+    if n_q_peaks:
+        q_amplitudes = [ch_data[q] for q in q_peaks if not np.isnan(q)]
+        if q_amplitudes:
+            features["q_amplitude"] = np.mean(q_amplitudes)
+
+    if n_r_peaks:
+        r_amplitudes = [ch_data[r] for r in r_peaks if not np.isnan(r)]
+        if r_amplitudes:
+            features["r_amplitude"] = np.mean(r_amplitudes)
+
+    if n_r_peaks > 1:
+        rr_intervals = np.diff(r_peaks) / sfreq
+        rr_intervals = rr_intervals[~np.isnan(rr_intervals)]
+        features["rr_interval_mean"] = np.mean(rr_intervals)
+        features["rr_interval_std"] = np.std(rr_intervals)
+        if len(rr_intervals) > 1:
+            features["rr_interval_median"] = np.median(rr_intervals)
+            features["rr_interval_iqr"] = np.percentile(
+                rr_intervals, 75
+            ) - np.percentile(rr_intervals, 25)
+            features["rr_interval_skewness"] = scipy.stats.skew(rr_intervals)
+            features["rr_interval_kurtosis"] = scipy.stats.kurtosis(rr_intervals)
+            # SD1: short-term variability
+            diff_rr = np.diff(rr_intervals)
+            sd1 = np.nanstd(diff_rr / np.sqrt(2))
+            # SD2: long-term variability
+            sdrr = np.nanstd(rr_intervals)  # overall HRV
+            interm = 2 * sdrr**2 - sd1**2
+            sd2 = np.sqrt(interm) if interm > 0 else np.nan
+            features["sd1"] = sd1
+            features["sd2"] = sd2
+            features["sd1_sd2_ratio"] = (
+                sd1 / (sd2 + EPS) if not np.isnan(sd2) else np.nan
+            )
+
+    if n_s_peaks:
+        s_amplitudes = [ch_data[s] for s in s_peaks if not np.isnan(s)]
+        if s_amplitudes:
+            features["s_amplitude"] = np.mean(s_amplitudes)
+
+    if n_t_peaks:
+        t_amplitudes = [ch_data[t] for t in t_peaks if not np.isnan(t)]
+        if t_amplitudes:
+            features["t_amplitude"] = np.mean(t_amplitudes)
+
+    return features
 
 
 def _get_n_processes(n_jobs: int | None, n_tasks: int) -> int:
@@ -786,384 +1079,3 @@ def get_welch_features(ecg_data: np.ndarray, sfreq: float) -> pd.DataFrame:
     feature_df = pd.DataFrame(all_features, columns=column_names)
     _log_end("Welch", start, feature_df.shape)
     return feature_df
-
-
-def _stat_single_patient(
-    sample_data: np.ndarray, sfreq: float, n_features: int
-) -> np.ndarray:
-    """Extract statistical features from a single sample of ECG data.
-
-    Args:
-        sample_data: Single sample of ECG data with shape (n_channels, n_timepoints)
-        sfreq: Sampling frequency of the ECG data in Hz
-        n_features: Number of features to extract
-
-    Returns:
-        Array containing the extracted statistical features
-    """
-    features = np.zeros(sample_data.shape[0] * n_features)
-    for ch, ch_data in enumerate(sample_data):
-        sum_ = np.sum(ch_data)
-        mean = np.mean(ch_data)
-        median = np.median(ch_data)
-        mode_result = scipy.stats.mode(ch_data, keepdims=False)
-        mode = mode_result if np.isscalar(mode_result) else mode_result[0]
-        variance = np.var(ch_data)
-        range_ = np.ptp(ch_data)
-        min_ = np.min(ch_data)
-        max_ = np.max(ch_data)
-        iqr = np.percentile(ch_data, 75) - np.percentile(ch_data, 25)
-        skewness = scipy.stats.skew(ch_data)
-        kurt = scipy.stats.kurtosis(ch_data)
-        peak_to_peak = max_ - min_
-        autocorr = (
-            np.corrcoef(ch_data[:-1], ch_data[1:])[0, 1] if len(ch_data) > 1 else 0
-        )
-
-        # Initialize all advanced features
-        time_to_first_peak = r_peak_amplitude = duration_between_peaks = (
-            amplitude_between_peaks
-        ) = rr_interval_mean = rr_interval_std = hrv = rr_diff_mean = (
-            rr_interval_median
-        ) = rr_iqr = rr_skewness = rr_kurtosis = heart_rate = 0.0
-
-        _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
-        rpeaks = peaks_info["ECG_R_Peaks"]
-
-        if len(rpeaks) > 1:
-            time_to_first_peak = rpeaks[0] / sfreq
-            r_peak_amplitude = ch_data[rpeaks[0]]
-            last_peak = rpeaks[-1]
-            duration_between_peaks = (last_peak - rpeaks[0]) / sfreq
-            amplitude_between_peaks = ch_data[last_peak] - ch_data[rpeaks[0]]
-
-            rr_intervals = np.diff(rpeaks) / sfreq
-            rr_interval_mean = np.mean(rr_intervals)
-            rr_interval_std = np.std(rr_intervals)
-            heart_rate = 60 / (rr_interval_mean + 1e-10)
-            hrv = rr_interval_std
-            if len(rr_intervals) > 1:
-                rr_diff_mean = np.mean(np.diff(rr_intervals))
-
-            rr_interval_median = np.median(rr_intervals)
-            rr_iqr = np.percentile(rr_intervals, 75) - np.percentile(rr_intervals, 25)
-            rr_skewness = scipy.stats.skew(rr_intervals)
-            rr_kurtosis = scipy.stats.kurtosis(rr_intervals)
-
-        channel_features = [
-            sum_,
-            mean,
-            median,
-            mode,
-            variance,
-            range_,
-            min_,
-            max_,
-            iqr,
-            skewness,
-            kurt,
-            peak_to_peak,
-            autocorr,
-            time_to_first_peak,
-            r_peak_amplitude,
-            duration_between_peaks,
-            amplitude_between_peaks,
-            rr_interval_mean,
-            rr_interval_std,
-            heart_rate,
-            hrv,
-            rr_diff_mean,
-            rr_interval_median,
-            rr_iqr,
-            rr_skewness,
-            rr_kurtosis,
-        ]
-        features[ch * n_features : (ch + 1) * n_features] = channel_features
-    return features
-
-
-def _morph_single_patient(
-    sample_data: np.ndarray, sfreq: float, n_features: int
-) -> np.ndarray:
-    """Extract morphological features from a single sample of ECG data.
-
-    Args:
-        sample_data: Single sample of ECG data with shape (n_channels, n_timepoints)
-        sfreq: Sampling frequency of the ECG data in Hz
-        n_features: Number of features to extract
-
-    Returns:
-        Array containing the extracted morphological features
-    """
-    n_chans = sample_data.shape[0]
-    features = np.zeros(n_chans * n_features)
-    for ch_num, ch_data in enumerate(sample_data):
-        ch_feat = _morph_single_channel(ch_data, sfreq, n_features)
-        features[ch_num * n_features : (ch_num + 1) * n_features] = ch_feat
-    return features
-
-
-def _morph_single_channel(
-    ch_data: np.ndarray, sfreq: float, n_features: int
-) -> np.ndarray:
-    """Extract morphological features from a single channel of ECG data.
-
-    Args:
-        ch_data: Single channel of ECG data with shape (n_timepoints,)
-        sfreq: Sampling frequency of the ECG data in Hz
-        n_features: Number of features to extract
-
-    Returns:
-        Array containing the extracted morphological features
-    """
-    _, peaks_info = nk.ecg_peaks(ch_data, sampling_rate=sfreq)
-    r_peaks = peaks_info["ECG_R_Peaks"]
-    n_r_peaks = len(r_peaks) if r_peaks is not None else 0
-
-    # Default-Featurewerte
-    qrs_duration = qt_interval = pq_interval = p_duration = t_duration = st_duration = 0
-    r_amplitude = s_amplitude = p_amplitude = t_amplitude = q_amplitude = 0
-    qrs_dispersion = qt_dispersion = p_dispersion = r_point_amplitude = 0
-    p_area = qrs_area = t_area = r_slope = t_slope = rt_duration = 0
-    qrs_curve_length = t_curve_slope = r_symmetry = 0
-    pq_dispersion = t_dispersion = st_dispersion = rt_dispersion = 0
-    if n_r_peaks <= 1:
-        return np.zeros(n_features)
-
-    import warnings
-
-    waves_dict: dict = {}
-    for method in ["dwt", "peak_prominence", "peak", "cwt"]:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", nk.misc.NeuroKitWarning)
-                _, waves_dict = nk.ecg_delineate(
-                    ch_data,
-                    rpeaks=r_peaks,
-                    sampling_rate=sfreq,
-                    method=method,
-                )
-            break
-        except nk.misc.NeuroKitWarning as e:
-            if "Too few peaks detected" in str(e):
-                logger.warning(f"Peak detection failed with method '{method}': {e}")
-            else:
-                raise
-    if not waves_dict:
-        raise ECGDelineationError("ECG delineation failed with all available methods.")
-
-    # Extrahiere Intervalle
-    p_peaks = waves_dict["ECG_P_Peaks"]
-    q_peaks = waves_dict["ECG_Q_Peaks"]
-    s_peaks = waves_dict["ECG_S_Peaks"]
-    t_peaks = waves_dict["ECG_T_Peaks"]
-
-    p_onsets = waves_dict["ECG_P_Onsets"]
-    p_offsets = waves_dict["ECG_P_Offsets"]
-    t_onsets = waves_dict["ECG_T_Onsets"]
-    t_offsets = waves_dict["ECG_T_Offsets"]
-
-    n_p_peaks = len(p_peaks) if p_peaks is not None else 0
-    n_q_peaks = len(q_peaks) if q_peaks is not None else 0
-    n_s_peaks = len(s_peaks) if s_peaks is not None else 0
-    n_t_peaks = len(t_peaks) if t_peaks is not None else 0
-    n_p_onsets = len(p_onsets) if p_onsets is not None else 0
-    n_p_offsets = len(p_offsets) if p_offsets is not None else 0
-    n_t_onsets = len(t_onsets) if t_onsets is not None else 0
-    n_t_offsets = len(t_offsets) if t_offsets is not None else 0
-
-    # QRS-Dauer
-    if n_q_peaks and n_s_peaks:
-        # Berechne durchschnittliche QRS-Dauer
-        qrs_durations: list[float] = []
-        max_index = min(n_q_peaks, n_s_peaks)
-        for q, s in zip(q_peaks[:max_index], s_peaks[:max_index]):
-            if q >= s or np.isnan(q) or np.isnan(s):
-                continue
-            qrs_durations.append((s - q) / sfreq * 1000)  # in ms
-        if qrs_durations:
-            qrs_duration = np.mean(qrs_durations)
-            qrs_dispersion = np.std(qrs_durations)
-
-    # QT-Intervall
-    if n_q_peaks and n_t_peaks:
-        qt_intervals = []
-        max_index = min(n_q_peaks, n_t_peaks)
-        for q, t in zip(q_peaks[:max_index], t_peaks[:max_index]):
-            if q >= t or np.isnan(q) or np.isnan(t):
-                continue
-            qt_intervals.append((t - q) / sfreq * 1000)  # in ms
-        if qt_intervals:
-            qt_interval = np.mean(qt_intervals)
-            qt_dispersion = np.std(qt_intervals)
-
-    # PQ-Intervall
-    if n_p_peaks and n_q_peaks:
-        pq_intervals = []
-        max_index = min(n_p_peaks, n_q_peaks)
-        for p, q in zip(p_peaks[:max_index], q_peaks[:max_index]):
-            if p >= q or np.isnan(p) or np.isnan(q):
-                continue
-            pq_intervals.append((q - p) / sfreq * 1000)  # in ms
-        if pq_intervals:
-            pq_interval = np.mean(pq_intervals)
-            pq_dispersion = np.std(pq_intervals)
-
-    # P-Dauer
-    if n_p_onsets and n_p_offsets:
-        p_durations = []
-        max_index = min(n_p_onsets, n_p_offsets)
-        for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
-            if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
-                continue
-            p_durations.append((p_off - p_on) / sfreq * 1000)
-        if p_durations:
-            p_duration = np.mean(p_durations)
-            p_dispersion = np.std(p_durations)
-
-    # T-Dauer
-    if n_t_onsets and n_t_offsets:
-        t_durations = []
-        max_index = min(n_t_onsets, n_t_offsets)
-        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
-            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
-                continue
-            t_durations.append((t_off - t_on) / sfreq * 1000)
-        if t_durations:
-            t_duration = np.mean(t_durations)
-            t_dispersion = np.std(t_durations)
-
-    # ST-Dauer
-    if n_s_peaks and n_t_onsets:
-        st_durations = []
-        max_index = min(n_s_peaks, n_t_onsets)
-        for s, t_on in zip(s_peaks[:max_index], t_onsets[:max_index]):
-            if s >= t_on or np.isnan(s) or np.isnan(t_on):
-                continue
-            st_durations.append((t_on - s) / sfreq * 1000)
-        if st_durations:
-            st_duration = np.mean(st_durations)
-            st_dispersion = np.std(st_durations)
-
-    # RT-Dauer
-    if n_r_peaks and n_t_onsets:
-        rt_durations = []
-        max_index = min(n_r_peaks, n_t_onsets)
-        for r, t_on in zip(r_peaks[:max_index], t_onsets[:max_index]):
-            if r >= t_on or np.isnan(r) or np.isnan(t_on):
-                continue
-            rt_durations.append((t_on - r) / sfreq * 1000)
-        if rt_durations:
-            rt_duration = np.mean(rt_durations)
-            rt_dispersion = np.std(rt_durations)
-
-    # Flächen (Integrale unter den Kurven)
-    if n_p_onsets and n_p_offsets:
-        p_areas = []
-        max_index = min(n_p_onsets, n_p_offsets)
-        for p_on, p_off in zip(p_onsets[:max_index], p_offsets[:max_index]):
-            if p_on >= p_off or np.isnan(p_on) or np.isnan(p_off):
-                continue
-            p_areas.append(np.sum(np.abs(ch_data[p_on:p_off])))
-        if p_areas:
-            p_area = np.mean(p_areas)
-
-    # T Area
-    if n_t_onsets and n_t_offsets:
-        t_areas = []
-        max_index = min(n_t_onsets, n_t_offsets)
-        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
-            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
-                continue
-            t_areas.append(np.sum(np.abs(ch_data[t_on:t_off])))
-        if t_areas:
-            t_area = np.mean(t_areas)
-
-    # R Slope
-    if n_r_peaks and n_q_peaks:
-        r_slopes = []
-        max_index = min(n_r_peaks, n_q_peaks)
-        for r, q in zip(r_peaks[:max_index], q_peaks[:max_index]):
-            if r < q or np.isnan(r) or np.isnan(q):
-                continue
-            delta_y = ch_data[r] - ch_data[q]
-            delta_x = (r - q) / sfreq
-            if delta_x > 0:
-                r_slopes.append(delta_y / delta_x)
-        if r_slopes:
-            r_slope = np.mean(r_slopes)
-
-    # T Slope
-    if n_t_onsets and n_t_offsets:
-        t_slopes = []
-        max_index = min(n_t_onsets, n_t_offsets)
-        for t_on, t_off in zip(t_onsets[:max_index], t_offsets[:max_index]):
-            if t_on >= t_off or np.isnan(t_on) or np.isnan(t_off):
-                continue
-            delta_y = ch_data[t_on] - ch_data[t_off]
-            delta_x = (t_on - t_off) / sfreq
-            if delta_x > 0:
-                t_slopes.append(delta_y / delta_x)
-        if t_slopes:
-            t_slope = np.mean(t_slopes)
-
-    # Amplituden
-    if n_p_peaks:
-        p_amplitudes = [ch_data[p] for p in p_peaks if not np.isnan(p)]
-        if p_amplitudes:
-            p_amplitude = np.mean(p_amplitudes)
-
-    if n_q_peaks:
-        q_amplitudes = [ch_data[q] for q in q_peaks if not np.isnan(q)]
-        if q_amplitudes:
-            q_amplitude = np.mean(q_amplitudes)
-
-    if n_r_peaks:
-        r_amplitudes = [ch_data[r] for r in r_peaks if not np.isnan(r)]
-        if r_amplitudes:
-            r_amplitude = np.mean(r_amplitudes)
-
-    if n_s_peaks:
-        s_amplitudes = [ch_data[s] for s in s_peaks if not np.isnan(s)]
-        if s_amplitudes:
-            s_amplitude = np.mean(s_amplitudes)
-
-    if n_t_peaks:
-        t_amplitudes = [ch_data[t] for t in t_peaks if not np.isnan(t)]
-        if t_amplitudes:
-            t_amplitude = np.mean(t_amplitudes)
-
-    features = np.array(
-        [
-            qrs_duration,
-            qt_interval,
-            pq_interval,
-            p_duration,
-            t_duration,
-            st_duration,
-            r_amplitude,
-            s_amplitude,
-            p_amplitude,
-            t_amplitude,
-            q_amplitude,
-            pq_dispersion,
-            t_dispersion,
-            st_dispersion,
-            rt_dispersion,
-            qrs_dispersion,
-            qt_dispersion,
-            p_dispersion,
-            r_point_amplitude,
-            p_area,
-            qrs_area,
-            t_area,
-            r_slope,
-            t_slope,
-            rt_duration,
-            qrs_curve_length,
-            t_curve_slope,
-            r_symmetry,
-        ]
-    )
-    assert n_features == features.shape[0]
-    return features

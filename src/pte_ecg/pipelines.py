@@ -100,16 +100,32 @@ def get_features(
             "ECG data must be a 3D numpy array with shape (n_samples, n_channels, n_timepoints)"
         )
 
-    logger.info("Starting ECG feature extraction pipeline...")
+    logger.info("Starting feature extraction pipeline...")
 
     # Apply preprocessing if enabled
     if settings.preprocessing.enabled:
         ecg, sfreq = preprocess(ecg, sfreq=sfreq, preprocessing=settings.preprocessing)
 
+    if float(sfreq).is_integer():
+        logger.info(
+            "Sampling frequency after preprocessing is integer. Converting to int."
+        )
+        sfreq = int(sfreq)
+
     feature_list = []
 
     if settings.features.fft.enabled:
         feature_list.append(get_fft_features(ecg, sfreq))
+
+    if settings.features.welch.enabled:
+        feature_list.append(get_welch_features(ecg, sfreq))
+
+    if settings.features.statistical.enabled:
+        feature_list.append(
+            get_statistical_features(
+                ecg, sfreq, n_jobs=settings.features.statistical.n_jobs
+            )
+        )
 
     if settings.features.morphological.enabled:
         feature_list.append(
@@ -119,17 +135,11 @@ def get_features(
         )
 
     if settings.features.nonlinear.enabled:
-        feature_list.append(get_nonlinear_features(ecg, sfreq))
-
-    if settings.features.statistical.enabled:
         feature_list.append(
-            get_statistical_features(
-                ecg, sfreq, n_jobs=settings.features.statistical.n_jobs
+            get_nonlinear_features(
+                ecg, sfreq, n_jobs=settings.features.nonlinear.n_jobs
             )
         )
-
-    if settings.features.welch.enabled:
-        feature_list.append(get_welch_features(ecg, sfreq))
 
     if not feature_list:
         raise ValueError(

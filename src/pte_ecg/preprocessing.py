@@ -10,6 +10,7 @@ The module is designed to work with multi-channel ECG data and provides a
 configurable preprocessing pipeline.
 """
 
+import warnings
 from typing import Literal
 
 import mne
@@ -30,7 +31,7 @@ class ResampleArgs(pydantic.BaseModel):
     """
 
     enabled: bool = False
-    sfreq_new: float | None = None
+    sfreq_new: int | float | None = None
 
 
 class BandpassArgs(pydantic.BaseModel):
@@ -43,8 +44,8 @@ class BandpassArgs(pydantic.BaseModel):
     """
 
     enabled: bool = False
-    l_freq: float | None = 0.5
-    h_freq: float | None = None
+    l_freq: int | float | None = 0.5
+    h_freq: int | float | None = None
 
 
 class NotchArgs(pydantic.BaseModel):
@@ -56,7 +57,7 @@ class NotchArgs(pydantic.BaseModel):
     """
 
     enabled: bool = False
-    freq: float | None = None
+    freq: int | float | None = None
 
 
 class NormalizeArgs(pydantic.BaseModel):
@@ -98,7 +99,7 @@ class PreprocessingSettings(pydantic.BaseModel):
 
 
 def preprocess(
-    ecg_data: np.ndarray, sfreq: float, preprocessing: PreprocessingSettings
+    ecg: np.ndarray, sfreq: float, preprocessing: PreprocessingSettings
 ) -> tuple[np.ndarray, float]:
     """Apply preprocessing steps to ECG data.
 
@@ -109,7 +110,7 @@ def preprocess(
     4. Normalization (if enabled)
 
     Args:
-        ecg_data: Input ECG data with shape (n_samples, n_channels, n_timepoints).
+        ecg: Input ECG data with shape (n_samples, n_channels, n_timepoints).
         sfreq: Sampling frequency of the input data in Hz.
         preprocessing: Preprocessing settings.
 
@@ -122,27 +123,29 @@ def preprocess(
         ValueError: If input data has invalid dimensions or preprocessing settings are invalid.
         RuntimeError: If preprocessing fails.
     """
-    if not preprocessing.enabled:
-        logger.debug("Preprocessing is disabled, returning original data.")
-        return ecg_data, sfreq
-
-    if not isinstance(ecg_data, np.ndarray) or ecg_data.ndim != 3:
-        raise ValueError(
-            "ECG data must be a 3D numpy array with shape (n_samples, n_channels, n_timepoints)"
-        )
-    import warnings
-
-    if ecg_data.shape[-1] < ecg_data.shape[-2]:
-        warnings.warn(
-            "ECG data must be a 3D numpy array with shape (n_samples, n_channels, n_timepoints)."
-            f"ECG data may have more channels than timepoints. Got shape: {ecg_data.shape}. Reshaping data."
-        )
-        ecg_data = ecg_data.transpose(0, 2, 1)
 
     if sfreq <= 0:
         raise ValueError(f"Sampling frequency must be positive, got {sfreq}")
 
-    n_samples, n_channels, n_timepoints = ecg_data.shape
+    if not isinstance(ecg, np.ndarray) or ecg.ndim != 3:
+        raise ValueError(
+            "ECG data must be a 3D numpy array with shape (n_samples, n_channels, n_timepoints)"
+        )
+
+    if ecg.shape[-1] < ecg.shape[-2]:
+        warnings.warn(
+            "ECG data must be a 3D numpy array with shape (n_samples, n_channels, n_timepoints)."
+            f"ECG data may have more channels than timepoints. Got shape: {ecg.shape}. Reshaping data."
+        )
+        ecg = ecg.transpose(0, 2, 1)
+
+    if not preprocessing.enabled:
+        logger.debug("Preprocessing is disabled, returning original data.")
+        return ecg, sfreq
+
+    ecg = _check_flats(ecg, drop_flat_recs=True)
+
+    n_samples, n_channels, n_timepoints = ecg.shape
     logger.info(
         f"Starting preprocessing of {n_samples} samples with {n_channels} channels "
         f"and {n_timepoints} timepoints at {sfreq} Hz"
@@ -151,19 +154,19 @@ def preprocess(
     if preprocessing.resample.enabled and sfreq_new is not None:
         sfreq_new = preprocessing.resample.sfreq_new
         logger.info(f"Resampling from {sfreq} Hz to {sfreq_new} Hz")
-        ecg_data = mne.filter.resample(
-            ecg_data,
+        ecg = mne.filter.resample(
+            ecg,
             up=1.0,
             down=sfreq / sfreq_new,
             axis=-1,
             n_jobs=1,
             verbose="WARNING",
         )
-        n_timepoints = ecg_data.shape[-1]
+        n_timepoints = ecg.shape[-1]
 
     if preprocessing.bandpass.enabled:
-        ecg_data = mne.filter.filter_data(
-            ecg_data,
+        ecg = mne.filter.filter_data(
+            ecg,
             sfreq_new,
             l_freq=preprocessing.bandpass.l_freq,
             h_freq=preprocessing.bandpass.h_freq,
@@ -172,22 +175,45 @@ def preprocess(
             verbose="WARNING",
         )
     if preprocessing.notch.enabled:
-        ecg_data = mne.filter.notch_filter(
-            ecg_data,
+        ecg = mne.filter.notch_filter(
+            ecg,
             sfreq_new,
             freqs=preprocessing.notch.freq,
             n_jobs=1,
             copy=True,
             verbose="WARNING",
         )
-    ecg_data = ecg_data.reshape(n_samples, -1)
+    ecg = ecg.reshape(n_samples, -1)
     if preprocessing.normalize.enabled:
-        ecg_data = mne.baseline.rescale(
-            ecg_data,
-            times=np.arange(ecg_data.shape[-1]),
+        ecg = mne.baseline.rescale(
+            ecg,
+            times=np.arange(ecg.shape[-1]),
             baseline=(None, None),
             mode=preprocessing.normalize.mode,
             verbose="WARNING",
         )
-    ecg_data = ecg_data.reshape(n_samples, n_channels, n_timepoints)
-    return ecg_data, sfreq_new
+    ecg = ecg.reshape(n_samples, n_channels, n_timepoints)
+    return ecg, sfreq_new
+
+
+def _check_flats(ecg: np.ndarray, drop_flats_recs: bool) -> np.ndarray:
+    are_flat_chs = np.all(np.isclose(ecg, ecg[..., 0:1]), axis=-1)
+    n_flats = np.sum(are_flat_chs)
+    if n_flats == ecg.shape[0] * ecg.shape[1]:
+        raise ValueError(
+            f"All channels of all recordings are flat lines ({n_flats}). Check your data"
+        )
+    if n_flats > 0:
+        logger.warning(
+            f"{n_flats} channels of {ecg.shape[0]} recordings are flat lines."
+        )
+    are_empty_recordings = np.all(are_flat_chs, axis=-1)
+    n_empty_recordings = np.sum(are_empty_recordings)
+    empty_recordings = np.where(are_empty_recordings)[0]
+    if n_empty_recordings > 0 and drop_flats_recs:
+        logger.warning(
+            f"Discarding {n_empty_recordings} recordings with flat lines in all channels."
+            f" Recording indices: {empty_recordings}."
+        )
+        ecg = ecg[~are_empty_recordings]
+    return ecg
