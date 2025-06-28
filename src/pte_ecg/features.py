@@ -534,7 +534,15 @@ def _nonlinear_single_channel(
         logger.warning(
             f"Error calculating lyapunov exponent for channel {ch_num} sample {sample_num}: {e}"
         )
-    features["correlation_dimension"] = nolds.corr_dim(ch_data, emb_dim=embedding_dim)
+
+    try:
+        features["correlation_dimension"] = nolds.corr_dim(
+            ch_data, emb_dim=embedding_dim
+        )
+    except AssertionError as e:
+        logger.warning(
+            f"Error calculating correlation dimension for channel {ch_num} sample {sample_num}: {e}"
+        )
     # Too slow
     # # Fractal Dimension Higuchi
     # features["fractal_higuchi"] = nk.fractal_higuchi(ch_data, k_max="default")[
@@ -949,10 +957,10 @@ def _get_n_processes(n_jobs: int | None, n_tasks: int) -> int:
 
     if sys.version_info >= (3, 13):
         n_processes = os.process_cpu_count()
-        logger.info(f"Using os.process_cpu_count(): {n_processes}")
+        logger.debug(f"Using os.process_cpu_count: {n_processes} processes available")
     else:
         n_processes = os.cpu_count()
-        logger.info(f"Using os.cpu_count(): {n_processes}")
+        logger.debug(f"Using os.cpu_count: {n_processes} processes available")
     return min(n_processes, n_tasks)
 
 
