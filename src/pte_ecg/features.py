@@ -7,6 +7,7 @@ processing for efficient computation on multi-channel ECG data.
 
 import multiprocessing
 import os
+import sys
 import time
 import warnings
 from typing import Literal
@@ -943,7 +944,13 @@ def _morph_single_channel(ch_data: np.ndarray, sfreq: float) -> dict[str, float]
 
 def _get_n_processes(n_jobs: int | None, n_tasks: int) -> int:
     """Get the number of processes to use for parallel processing."""
-    n_processes = os.cpu_count() if n_jobs in [-1, None] else n_jobs
+    if n_jobs not in [-1, None]:
+        return n_jobs
+
+    if sys.version_info >= (3, 13):
+        n_processes = os.process_cpu_count()
+    else:
+        n_processes = os.process_count()
     return min(n_processes, n_tasks)
 
 
