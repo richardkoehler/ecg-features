@@ -948,11 +948,11 @@ def _get_n_processes(n_jobs: int | None, n_tasks: int) -> int:
         return n_jobs
 
     if sys.version_info >= (3, 13):
-        logger.info(f"Using os.process_cpu_count(): {os.process_cpu_count()}")
         n_processes = os.process_cpu_count()
+        logger.info(f"Using os.process_cpu_count(): {n_processes}")
     else:
-        logger.info(f"Using os.process_count(): {os.process_count()}")
-        n_processes = os.process_count()
+        n_processes = os.cpu_count()
+        logger.info(f"Using os.cpu_count(): {n_processes}")
     return min(n_processes, n_tasks)
 
 
