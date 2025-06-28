@@ -524,10 +524,15 @@ def _nonlinear_single_channel(
         )
 
     # Lyapunov
-    lyap_exp = features["largest_lyapunov_exponent"] = nolds.lyap_r(
-        ch_data, emb_dim=embedding_dim
-    )
-    features["dynamic_stability"] = np.exp(-np.abs(lyap_exp))
+    try:
+        lyap_exp = features["largest_lyapunov_exponent"] = nolds.lyap_r(
+            ch_data, emb_dim=embedding_dim
+        )
+        features["dynamic_stability"] = np.exp(-np.abs(lyap_exp))
+    except ValueError as e:
+        logger.warning(
+            f"Error calculating lyapunov exponent for channel {ch_num} sample {sample_num}: {e}"
+        )
     features["correlation_dimension"] = nolds.corr_dim(ch_data, emb_dim=embedding_dim)
     # Too slow
     # # Fractal Dimension Higuchi
