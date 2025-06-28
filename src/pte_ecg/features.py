@@ -476,14 +476,16 @@ def _nonlinear_single_patient(
     logger.info(f"Processing sample number: {sample_num}...")
     features: dict[str, float] = {}
     for ch_num, ch_data in enumerate(sample_data):
-        ch_feat = _nonlinear_single_channel(ch_data, sfreq)
+        ch_feat = _nonlinear_single_channel(ch_data, sfreq, sample_num, ch_num)
         features.update(
             (f"nonlinear_{key}_ch{ch_num}", value) for key, value in ch_feat.items()
         )
     return features
 
 
-def _nonlinear_single_channel(ch_data: np.ndarray, sfreq: float) -> dict[str, float]:
+def _nonlinear_single_channel(
+    ch_data: np.ndarray, sfreq: float, sample_num: int, ch_num: int
+) -> dict[str, float]:
     """Extract nonlinear features from a single channel of ECG data.
 
     Args:
@@ -511,8 +513,16 @@ def _nonlinear_single_channel(ch_data: np.ndarray, sfreq: float) -> dict[str, fl
         else np.nan
     )
 
-    embedding_dim, _ = nk.complexity_dimension(ch_data, dimension_max=10)
-    features["embedding_dimension"] = embedding_dim
+    features["embedding_dimension"] = np.nan
+    embedding_dim = 3
+    try:
+        embedding_dim, _ = nk.complexity_dimension(ch_data, dimension_max=10)
+        features["embedding_dimension"] = embedding_dim
+    except IndexError as e:
+        logger.warning(
+            f"Error calculating embedding dimension for channel {ch_num} sample {sample_num}: {e}"
+        )
+
     # Lyapunov
     lyap_exp = features["largest_lyapunov_exponent"] = nolds.lyap_r(
         ch_data, emb_dim=embedding_dim
